@@ -1,0 +1,8 @@
+[package]
+name = "haechix"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+haechix-boot-protocol = { workspace = true }
+haechix-user-abi = { workspace = true }

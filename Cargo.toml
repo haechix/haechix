@@ -1,0 +1,24 @@
+[workspace]
+resolver = "3"
+members = [
+    "crates/kernel",
+    "crates/arch-aarch64",
+    "crates/drivers",
+    "crates/boot-protocol",
+    "crates/user-abi",
+    "boards/qemu-virt",
+    "boards/rpi5",
+]
+
+[profile.dev]
+panic = "abort"
+
+[profile.release]
+panic = "abort"
+
+[workspace.dependencies]
+haechix = { path = "crates/kernel" }
+haechix-arch-aarch64 = { path = "crates/arch-aarch64" }
+haechix-drivers = { path = "crates/drivers" }
+haechix-boot-protocol = { path = "crates/boot-protocol" }
+haechix-user-abi = { path = "crates/user-abi" }
