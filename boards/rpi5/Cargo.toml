@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-haechix = { workspace = true }
-haechix-arch-aarch64 = { workspace = true }
-haechix-drivers = { workspace = true }
-haechix-boot-protocol = { workspace = true }
+kernel = { workspace = true }
+arch-aarch64 = { workspace = true }
+drivers = { workspace = true }
+boot-protocol = { workspace = true }

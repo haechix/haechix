@@ -17,8 +17,8 @@ panic = "abort"
 panic = "abort"
 
 [workspace.dependencies]
-haechix = { path = "crates/kernel" }
-haechix-arch-aarch64 = { path = "crates/arch-aarch64" }
-haechix-drivers = { path = "crates/drivers" }
-haechix-boot-protocol = { path = "crates/boot-protocol" }
-haechix-user-abi = { path = "crates/user-abi" }
+kernel = { package = "haechix-kernel", path = "crates/kernel" }
+arch-aarch64 = { package = "haechix-arch-aarch64", path = "crates/arch-aarch64" }
+drivers = { package = "haechix-drivers", path = "crates/drivers" }
+boot-protocol = { package = "haechix-boot-protocol", path = "crates/boot-protocol" }
+user-abi = { package = "haechix-user-abi", path = "crates/user-abi" }

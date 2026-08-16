@@ -7,7 +7,7 @@
       1. QEMU를 디버그 대기 상태로 실행
       2. GDB가 QEMU에 접속
       3. _start에서 실행 흐름 추적
-      4. kernel_main breakpoint 도달 확인
+      4. haechix-kernel::start breakpoint 도달 확인
       5. AArch64 레지스터와 메모리 검사
 3. Phase 0
    1. M00 — Workspace Initialization
@@ -27,7 +27,7 @@
          5. user-abi
 
       3. M00-C — Board Binary Crates
-         1. QEMU virt용 haechix-qemu 생성
+         1. QEMU virt용 haechix-qemu-virt 생성
          2. Raspberry Pi 5용 haechix-rpi5 생성
          3. Raspberry Pi 4 board는 optional/parked 처리
 
@@ -46,7 +46,7 @@
          5. user-abi에 #![no_std] 적용
          6. qemu-virt board의 std/println 제거
          7. rpi5 board의 std/println 제거
-         
+
       6. M00-F — Workspace Dependency Boundaries
          1. qemu-virt board와 공통 crate 연결
          2. rpi5 board와 공통 crate 연결
@@ -69,7 +69,7 @@
       8. M00-H — Workspace Validation
          1. cargo fmt --all --check
          2. 공통 library crate AArch64 빌드
-         3. haechix-qemu 최소 빌드
+         3. haechix-qemu-virt 최소 빌드
          4. haechix-rpi5 최소 빌드
          5. cargo clippy 검증
          6. dependency graph 확인
@@ -90,6 +90,53 @@
       2. interrupt masking
       3. 부트용 stack pointer 설정
       4. .bss 영역 0으로 초기화
-      5. Rust kernel_main() 호출
+      5. Rust haechix-kernel::start() 호출
       6. 함수가 반환되면 wfe 무한 루프
       7. 필요한 linker script와 메모리 section 배치
+
+
+
+
+
+
+### M01 — QEMU Rust Entry
+
+| 작업 | 내용 |
+|---|---|
+| M01-A | QEMU board linker layout 정의 |
+| M01-B | 최소 AArch64 `_start` assembly 작성 |
+| M01-C | assembly와 linker script를 QEMU board 빌드에 연결 |
+| M01-D | interrupt masking과 64 KiB boot stack 설정 |
+| M01-E | linker symbol 기반 `.bss` zero clear 구현 |
+| M01-F | board `start()`에서 `kernel::start()` 호출 |
+| M01-G | Rust 반환 시 `wfe` loop, panic 시 spin loop 진입 |
+| M01-H | ELF entry point, section, symbol 및 disassembly 검사 |
+| M01-I | QEMU Cortex-A76 실행 및 GDB 진입 경로 검증 |
+
+#### 검증 결과
+
+- ELF `_start`: `0x40080000`
+- QEMU CPU model: `cortex-a76`
+- GDB에서 `_start` 진입 확인
+- `haechix_qemu_virt::start` breakpoint 도달
+- `haechix_kernel::start` 진입 확인
+- Rust 함수 반환 후 `wfe` loop 진입 확인
+- QEMU 및 Raspberry Pi 5 AArch64 cross-build 성공
+- Raspberry Pi 5의 `_start` 경고는 해당 포팅 단계까지 의도적으로 유예
+
+
+
+
+
+
+
+
+
+| Phase | 주 실행 환경 | 목적 |
+|---|---|---|
+| Phase A | QEMU | 최소 부팅·UART·EL·DTB 기반 완성 |
+| Phase B | Pi 5 | 최소 entry/UART만 조기 검증 |
+| Phase C | QEMU | exception, timer, IRQ, allocator, MMU, scheduler |
+| Phase D | QEMU | userspace, syscall, IPC, capability |
+| Phase E | Pi 5 + QEMU | 완성된 microkernel 기능을 Pi 5에 포팅 |
+| Phase F 이후 | Pi 5 + QEMU | SMP 및 고급 기능 |

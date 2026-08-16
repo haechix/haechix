@@ -2,6 +2,15 @@
 #![no_std]
 #![no_main]
 
+// Include the AArch64 entry point that runs before Rust code.
+core::arch::global_asm!(include_str!("boot.S"));
+
+// SAFETY: This is the unique exported definition of the boot ABI symbol.
+#[unsafe(no_mangle)]
+pub extern "C" fn start() {
+    kernel::start();
+}
+
 use core::panic::PanicInfo;
 
 #[panic_handler]

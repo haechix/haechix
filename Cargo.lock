@@ -3,14 +3,6 @@
 version = 4
 
 [[package]]
-name = "haechix"
-version = "0.1.0"
-dependencies = [
- "haechix-boot-protocol",
- "haechix-user-abi",
-]
-
-[[package]]
 name = "haechix-arch-aarch64"
 version = "0.1.0"
 
@@ -23,23 +15,31 @@ name = "haechix-drivers"
 version = "0.1.0"
 
 [[package]]
-name = "haechix-qemu"
+name = "haechix-kernel"
 version = "0.1.0"
 dependencies = [
- "haechix",
+ "haechix-boot-protocol",
+ "haechix-user-abi",
+]
+
+[[package]]
+name = "haechix-qemu-virt"
+version = "0.1.0"
+dependencies = [
  "haechix-arch-aarch64",
  "haechix-boot-protocol",
  "haechix-drivers",
+ "haechix-kernel",
 ]
 
 [[package]]
 name = "haechix-rpi5"
 version = "0.1.0"
 dependencies = [
- "haechix",
  "haechix-arch-aarch64",
  "haechix-boot-protocol",
  "haechix-drivers",
+ "haechix-kernel",
 ]
 
 [[package]]
