@@ -1,0 +1,324 @@
+schema_version: 1
+document_type: milestone_test_spec
+
+project: haechix
+phase:
+  id: A
+  title: QEMU Minimal Boot
+
+milestone:
+  id: M01
+  title: QEMU Rust Entry
+  objective: >
+    Enter the QEMU virt kernel through the AArch64 _start symbol,
+    initialize the minimum boot state, and transfer control into
+    the platform-independent Rust kernel.
+
+environment:
+  working_directory: repository_root
+  host: WSL2 Ubuntu
+  rust_version: "1.97.1"
+  target: aarch64-unknown-none
+  qemu_machine: virt
+  qemu_cpu: cortex-a76
+  virtual_cpu_count: 1
+  memory: 256M
+  gdb_port: 1234
+
+naming:
+  elf_entry: _start
+  board_rust_entry: start
+  kernel_rust_entry: haechix_kernel::start
+  note: >
+    The original guide called the Rust entry kernel_main.
+    Haechix uses the board ABI symbol start, which calls kernel::start.
+
+scope:
+  included:
+    - QEMU linker script
+    - AArch64 _start entry point
+    - Interrupt masking
+    - Boot stack initialization
+    - BSS zero initialization
+    - Board-to-kernel Rust entry
+    - WFE parking loop
+    - QEMU GDB validation
+
+  excluded_at_completion:
+    - UART
+    - Exception vector
+    - Exception-level transition
+    - Device Tree parsing
+    - MMU
+    - Allocator
+    - Timer
+    - Scheduler
+    - System calls
+    - IPC
+
+artifacts:
+  binary: target/aarch64-unknown-none/debug/haechix-qemu-virt
+  linker_script: boards/qemu-virt/linker.ld
+  build_script: boards/qemu-virt/build.rs
+  assembly_entry: boards/qemu-virt/src/boot.S
+  board_entry: boards/qemu-virt/src/main.rs
+  kernel_entry: crates/kernel/src/lib.rs
+
+test_cases:
+  - id: M01-TC-001
+    title: Workspace formatting is valid
+    category: quality
+    method: command
+    command: cargo fmt --all --check
+    expected:
+      exit_code: 0
+      stdout: empty
+
+  - id: M01-TC-002
+    title: QEMU board cross-build succeeds
+    category: build
+    method: command
+    command: cargo build --target aarch64-unknown-none -p haechix-qemu-virt
+    expected:
+      exit_code: 0
+      forbidden_warnings:
+        - "cannot find entry symbol _start"
+
+  - id: M01-TC-003
+    title: Linker script defines the boot layout
+    category: linker
+    method: static_review
+    file: boards/qemu-virt/linker.ld
+    expected:
+      architecture: aarch64
+      entry_symbol: _start
+      load_address: "0x40080000"
+      boot_stack_size: 64K
+      sections:
+        - .text.boot
+        - .text
+        - .rodata
+        - .data
+        - .bss
+        - .boot_stack
+      required_symbols:
+        - __kernel_start
+        - __bss_start
+        - __bss_end
+        - __boot_stack_bottom
+        - __boot_stack_top
+        - __kernel_end
+      properties:
+        - .text.boot is retained with KEEP
+        - .bss is marked NOLOAD
+        - .boot_stack is marked NOLOAD
+        - Boot stack is aligned to 16 bytes
+        - Exception frame sections are discarded
+
+  - id: M01-TC-004
+    title: ELF header identifies AArch64 and the correct entry address
+    category: elf
+    method: command
+    command: >
+      "$(rustc --print sysroot)/lib/rustlib/x86_64-unknown-linux-gnu/bin/llvm-readobj"
+      --file-headers
+      target/aarch64-unknown-none/debug/haechix-qemu-virt
+    expected:
+      exit_code: 0
+      stdout_contains:
+        - EM_AARCH64
+        - "Entry: 0x40080000"
+
+  - id: M01-TC-005
+    title: Required boot and Rust symbols are linked
+    category: elf
+    method: command
+    command: >
+      "$(rustc --print sysroot)/lib/rustlib/x86_64-unknown-linux-gnu/bin/llvm-nm"
+      --demangle
+      --numeric-sort
+      target/aarch64-unknown-none/debug/haechix-qemu-virt
+    expected:
+      exit_code: 0
+      stdout_contains:
+        - _start
+        - start
+        - haechix_kernel
+        - __bss_start
+        - __bss_end
+        - __boot_stack_bottom
+        - __boot_stack_top
+
+  - id: M01-TC-006
+    title: Boot stack has the required size and alignment
+    category: memory
+    method: symbol_review
+    source: M01-TC-005
+    expected:
+      stack_size_bytes: 65536
+      stack_top_alignment_bytes: 16
+      invariant: >
+        __boot_stack_top minus __boot_stack_bottom equals 0x10000.
+
+  - id: M01-TC-007
+    title: Assembly performs the required boot sequence
+    category: boot
+    method: command
+    command: >
+      "$(rustc --print sysroot)/lib/rustlib/x86_64-unknown-linux-gnu/bin/llvm-objdump"
+      --demangle
+      --disassemble
+      target/aarch64-unknown-none/debug/haechix-qemu-virt
+    expected:
+      exit_code: 0
+      instruction_order:
+        - "msr DAIFSet, #0xf"
+        - Initialize SP from __boot_stack_top
+        - Load __bss_start and __bss_end
+        - Store zero across the BSS range
+        - Branch with link to start
+        - Execute wfe
+        - Branch back to wfe
+      invariants:
+        - No instruction uses the stack before SP initialization
+        - BSS clearing supports an empty BSS range
+        - BSS clearing does not write beyond __bss_end
+
+  - id: M01-TC-008
+    title: Board Rust entry calls the platform-independent kernel
+    category: rust_entry
+    method: static_review
+    file: boards/qemu-virt/src/main.rs
+    expected:
+      exported_symbol: start
+      calling_convention: C
+      attributes:
+        - no_mangle
+      calls:
+        - kernel::start
+      safety_requirements:
+        - The exported boot ABI symbol has a documented uniqueness invariant
+
+  - id: M01-TC-009
+    title: QEMU starts paused at the ELF entry point
+    category: runtime
+    method: manual_qemu_gdb
+    qemu_command: >
+      qemu-system-aarch64
+      -machine virt
+      -cpu cortex-a76
+      -smp 1
+      -m 256M
+      -nographic
+      -kernel target/aarch64-unknown-none/debug/haechix-qemu-virt
+      -S
+      -s
+    gdb_start_command: >
+      gdb-multiarch
+      target/aarch64-unknown-none/debug/haechix-qemu-virt
+    gdb_commands:
+      - "target remote :1234"
+    expected:
+      qemu_state: paused
+      gdb_connected: true
+      program_counter: "0x40080000"
+      current_symbol: _start
+
+  - id: M01-TC-010
+    title: GDB reaches the board Rust entry
+    category: runtime
+    method: manual_gdb
+    precondition:
+      - M01-TC-009 passed
+    gdb_commands:
+      - break start
+      - continue
+    expected:
+      breakpoint_hit: true
+      current_function: haechix_qemu_virt::start
+      current_source: boards/qemu-virt/src/main.rs
+      current_statement: kernel::start
+
+  - id: M01-TC-011
+    title: GDB enters the platform-independent kernel
+    category: runtime
+    method: manual_gdb
+    precondition:
+      - M01-TC-010 passed
+    gdb_commands:
+      - step
+    expected:
+      current_function: haechix_kernel::start
+      current_source: crates/kernel/src/lib.rs
+
+  - id: M01-TC-012
+    title: Returning Rust entry reaches the WFE parking loop
+    category: runtime
+    method: manual_gdb
+    precondition:
+      - M01-TC-011 passed
+    gdb_commands:
+      - finish
+      - finish
+      - "x/i $pc"
+    expected:
+      breakpoint_hit: true
+      current_instruction_contains: wfe
+      behavior: >
+        The processor remains in the WFE loop after the Rust entry returns.
+
+  - id: M01-TC-013
+    title: M01 does not implement later milestone functionality
+    category: scope_guard
+    method: static_review
+    lifecycle: milestone_boundary_only
+    expected_absent:
+      - UART MMIO implementation
+      - Exception vector table
+      - Exception-level transition
+      - MMU configuration
+      - Allocator
+      - Timer initialization
+      - Scheduler
+      - System calls
+      - IPC
+
+  - id: M01-TC-014
+    title: Raspberry Pi 5 board retains cross-build compatibility
+    category: regression
+    method: command
+    command: cargo build --target aarch64-unknown-none -p haechix-rpi5
+    expected:
+      exit_code: 0
+      permitted_warnings:
+        - "cannot find entry symbol _start"
+      limitations:
+        - This is not Raspberry Pi 5 hardware validation
+        - Raspberry Pi 5 boot entry is deferred to its porting milestone
+
+completion:
+  primary_condition: >
+    GDB reaches haechix_qemu_virt::start and then enters
+    haechix_kernel::start from the QEMU AArch64 _start entry.
+
+  required_test_cases:
+    - M01-TC-001
+    - M01-TC-002
+    - M01-TC-003
+    - M01-TC-004
+    - M01-TC-005
+    - M01-TC-006
+    - M01-TC-007
+    - M01-TC-008
+    - M01-TC-009
+    - M01-TC-010
+    - M01-TC-011
+    - M01-TC-012
+    - M01-TC-013
+    - M01-TC-014
+
+  interpretation:
+    - M01 validates QEMU boot entry and Rust control transfer
+    - M01 does not validate UART output
+    - M01 does not validate Raspberry Pi 5 hardware boot
+    - M02 functionality must remain unimplemented

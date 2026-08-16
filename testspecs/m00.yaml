@@ -1,0 +1,227 @@
+schema_version: 1
+document_type: milestone_test_spec
+
+project: haechix
+phase:
+  id: A
+  title: QEMU Minimal Boot
+
+milestone:
+  id: M00
+  title: Workspace Initialization
+  objective: >
+    Establish a reproducible Rust AArch64 bare-metal workspace with
+    common library crates and QEMU virt and Raspberry Pi 5 board crates.
+
+environment:
+  working_directory: repository_root
+  host: WSL2 Ubuntu
+  rust_version: "1.97.1"
+  target: aarch64-unknown-none
+  qemu_machine: virt
+  qemu_cpu: cortex-a76
+  virtual_cpu_count: 1
+
+scope:
+  included:
+    - Rust toolchain and AArch64 target configuration
+    - Cargo workspace configuration
+    - Common no_std library crates
+    - QEMU virt board binary crate
+    - Raspberry Pi 5 board binary crate
+    - Architecture dependency boundaries
+    - Formatting and cross-build validation
+
+  excluded_at_completion:
+    - Linker script
+    - Assembly entry point
+    - UART
+    - Exception handling
+    - Exception-level transition
+    - MMU
+    - Allocator
+    - Timer
+    - Scheduler
+    - System calls
+    - IPC
+
+  deviations:
+    - item: Raspberry Pi 4 board crate
+      decision: parked
+      reason: Raspberry Pi 5 is the first official physical target
+
+test_cases:
+  - id: M00-TC-001
+    title: Rust version is pinned
+    category: toolchain
+    method: command
+    command: rustc --version
+    expected:
+      exit_code: 0
+      stdout_contains:
+        - "rustc 1.97.1"
+
+  - id: M00-TC-002
+    title: AArch64 bare-metal target is installed
+    category: toolchain
+    method: command
+    command: rustup target list --toolchain 1.97.1 --installed
+    expected:
+      exit_code: 0
+      stdout_contains:
+        - aarch64-unknown-none
+
+  - id: M00-TC-003
+    title: Required Rust components are installed
+    category: toolchain
+    method: command
+    command: rustup component list --toolchain 1.97.1 --installed
+    expected:
+      exit_code: 0
+      stdout_contains:
+        - rust-src
+        - llvm-tools
+        - rustfmt
+        - clippy
+
+  - id: M00-TC-004
+    title: QEMU and GDB are available
+    category: development_environment
+    method: commands
+    commands:
+      - qemu-system-aarch64 --version
+      - gdb-multiarch --version
+    expected:
+      all_exit_codes: 0
+
+  - id: M00-TC-005
+    title: Cortex-A76 CPU model is supported
+    category: development_environment
+    method: command
+    command: qemu-system-aarch64 -machine virt -cpu help
+    expected:
+      exit_code: 0
+      stdout_contains:
+        - cortex-a76
+
+  - id: M00-TC-006
+    title: Workspace contains the required packages
+    category: workspace
+    method: command
+    command: cargo metadata --no-deps --format-version 1
+    expected:
+      exit_code: 0
+      stdout_contains:
+        - haechix-kernel
+        - haechix-arch-aarch64
+        - haechix-drivers
+        - haechix-boot-protocol
+        - haechix-user-abi
+        - haechix-qemu-virt
+        - haechix-rpi5
+
+  - id: M00-TC-007
+    title: Workspace policy is configured
+    category: workspace
+    method: static_review
+    file: Cargo.toml
+    expected:
+      resolver: "3"
+      dev_panic_strategy: abort
+      release_panic_strategy: abort
+
+  - id: M00-TC-008
+    title: Common library crates are no_std
+    category: bare_metal
+    method: static_review
+    files:
+      - crates/kernel/src/lib.rs
+      - crates/arch-aarch64/src/lib.rs
+      - crates/drivers/src/lib.rs
+      - crates/boot-protocol/src/lib.rs
+      - crates/user-abi/src/lib.rs
+    expected:
+      every_file_contains:
+        - "#![no_std]"
+
+  - id: M00-TC-009
+    title: Board binaries are freestanding
+    category: bare_metal
+    method: static_review
+    files:
+      - boards/qemu-virt/src/main.rs
+      - boards/rpi5/src/main.rs
+    expected:
+      every_file_contains:
+        - "#![no_std]"
+        - "#![no_main]"
+
+  - id: M00-TC-010
+    title: Architecture dependency boundaries are preserved
+    category: architecture
+    method: static_review
+    expected:
+      rules:
+        - Kernel does not depend on a board crate
+        - Kernel depends only on boot-protocol and user-abi
+        - Board crates assemble kernel, architecture, drivers, and boot protocol
+        - Board-specific addresses do not appear in the kernel crate
+
+  - id: M00-TC-011
+    title: Cargo build artifacts are ignored
+    category: repository
+    method: command
+    command: git check-ignore target/
+    expected:
+      exit_code: 0
+      stdout_contains:
+        - target/
+
+  - id: M00-TC-012
+    title: Workspace formatting is valid
+    category: quality
+    method: command
+    command: cargo fmt --all --check
+    expected:
+      exit_code: 0
+      stdout: empty
+
+  - id: M00-TC-013
+    title: QEMU board cross-build succeeds
+    category: build
+    method: command
+    command: cargo build --target aarch64-unknown-none -p haechix-qemu-virt
+    expected:
+      exit_code: 0
+
+  - id: M00-TC-014
+    title: Raspberry Pi 5 board cross-build succeeds
+    category: build
+    method: command
+    command: cargo build --target aarch64-unknown-none -p haechix-rpi5
+    expected:
+      exit_code: 0
+      permitted_warnings:
+        - "cannot find entry symbol _start"
+
+completion:
+  required_test_cases:
+    - M00-TC-001
+    - M00-TC-002
+    - M00-TC-003
+    - M00-TC-004
+    - M00-TC-005
+    - M00-TC-006
+    - M00-TC-007
+    - M00-TC-008
+    - M00-TC-009
+    - M00-TC-010
+    - M00-TC-011
+    - M00-TC-012
+    - M00-TC-013
+    - M00-TC-014
+
+  interpretation:
+    - Successful cross-builds validate compilation and linkage only
+    - Raspberry Pi 5 hardware boot is not validated by M00
+    - Runtime entry into Rust is deferred to M01
