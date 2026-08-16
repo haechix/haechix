@@ -1,0 +1,434 @@
+schema_version: 1
+document_type: milestone_test_spec
+
+project: haechix
+phase:
+  id: A
+  title: QEMU Minimal Boot
+
+milestone:
+  id: M03
+  title: Exception Level Normalization
+  objective: >
+    Detect the initial AArch64 Exception Level and guarantee that
+    Rust board and kernel code execute at EL1h.
+
+environment:
+  working_directory: repository_root
+  host: WSL2 Ubuntu
+  rust_version: "1.97.1"
+  target: aarch64-unknown-none
+  qemu_cpu: cortex-a76
+  virtual_cpu_count: 1
+  memory: 256M
+
+runtime_profiles:
+  default_el1:
+    qemu_machine: virt
+    expected_entry_level: EL1
+
+  el2_transition:
+    qemu_machine: virt,virtualization=on
+    required_entry_level: EL2
+    entry_level_verification: GDB at _start
+    normalized_level: EL1
+
+exception_level_policy:
+  EL3:
+    supported: false
+    action: report_error_and_park
+
+  EL2:
+    supported: true
+    action: transition_to_EL1h
+
+  EL1:
+    supported: true
+    action: continue_without_transition
+
+  EL0:
+    supported: false
+    action: outside_supported_boot_contract
+    limitation: CurrentEL is not readable at EL0
+
+  normalized_level: EL1
+  normalized_stack_mode: EL1h
+
+current_el_encoding:
+  register: CurrentEL
+  access_requirement: EL1_or_higher
+  field_bits: "3:2"
+  values:
+    EL0: "0b00"
+    EL1: "0b01"
+    EL2: "0b10"
+    EL3: "0b11"
+
+el2_transition_contract:
+  target_level: EL1h
+  requirements:
+    - Preserve the boot DTB address
+    - Keep interrupts masked during the transition
+    - Set HCR_EL2.RW for AArch64 EL1 execution
+    - Clear CPTR_EL2.TFP so EL1 FP and Advanced SIMD are not trapped
+    - Install a valid 16-byte-aligned SP_EL1
+    - Set ELR_EL2 to the EL1 continuation address
+    - Set SPSR_EL2 mode bits for EL1h
+    - Keep D, A, I, and F masked in SPSR_EL2
+    - Execute ERET
+    - Continue boot initialization at EL1
+
+rust_execution_contract:
+  target_abi: hard-float
+  normalized_level: EL1
+  requirements:
+    - CPACR_EL1.FPEN is set to 0b11 before entering Rust
+    - ISB executes after updating CPACR_EL1
+    - Rust code is never entered from EL2, EL3, or EL0
+
+register_output_contract:
+  order:
+    - CurrentEL
+    - MPIDR_EL1
+    - SCTLR_EL1
+
+  CurrentEL:
+    displayed_value: EL1
+
+  MPIDR_EL1:
+    format: "0x followed by 16 lowercase hexadecimal digits"
+
+  SCTLR_EL1:
+    format: "0x followed by 16 lowercase hexadecimal digits"
+
+output_contract:
+  inherited_line: "Haechix M02: QEMU UART OK\n"
+  success_line: "Haechix M03: EL1 OK\n"
+  register_lines:
+    - "CurrentEL=EL1\n"
+    - "MPIDR_EL1=0x????????????????\n"
+    - "SCTLR_EL1=0x????????????????\n"
+
+  expected_order:
+    - "Haechix M02: QEMU UART OK"
+    - "Haechix M03: EL1 OK"
+    - "CurrentEL=EL1"
+    - "MPIDR_EL1=0x????????????????"
+    - "SCTLR_EL1=0x????????????????"
+
+  unsupported_lines:
+    EL3: "Haechix M03: unsupported EL3\n"
+
+ownership:
+  arch_aarch64:
+    - Owns AArch64 system register access
+    - Owns CurrentEL decoding
+    - Owns reusable EL2 to EL1 transition mechanisms
+    - Must not contain QEMU MMIO addresses
+
+  qemu_board:
+    - Connects the earliest board entry to EL normalization
+    - Owns QEMU-specific UART reporting
+    - Preserves the boot DTB address
+    - Calls kernel::start only after EL1 normalization
+
+  kernel:
+    - Remains independent of AArch64 system registers
+    - Must not depend on QEMU-specific code
+    - Must only be entered after successful normalization
+
+scope:
+  included:
+    - CurrentEL detection and decoding
+    - EL1 direct boot path
+    - EL2 to EL1h transition
+    - Explicit EL3 unsupported path
+    - EL0 exclusion from the supported boot-entry contract
+    - HCR_EL2 configuration
+    - CPTR_EL2 FP and Advanced SIMD trap prevention
+    - SPSR_EL2 and ELR_EL2 configuration
+    - SP_EL1 installation
+    - CPACR_EL1 FP and Advanced SIMD enablement
+    - CurrentEL, MPIDR_EL1, and SCTLR_EL1 reporting
+    - M02 UART output regression validation
+    - QEMU EL1 and EL2 entry-path validation
+
+  excluded_at_completion:
+    - Full exception vector
+    - Synchronous exception handler
+    - IRQ handling
+    - Generic timer
+    - GIC
+    - Device Tree parsing
+    - Page allocator
+    - MMU enablement
+    - Kernel threads
+    - Scheduler
+    - Userspace
+    - Syscalls
+    - SMP
+
+artifacts:
+  arch_root: crates/arch-aarch64/src
+  qemu_boot_entry: boards/qemu-virt/src/boot.S
+  qemu_board_entry: boards/qemu-virt/src/main.rs
+  qemu_binary: target/aarch64-unknown-none/debug/haechix-qemu-virt
+
+test_cases:
+  - id: M03-TC-001
+    title: Workspace formatting is valid
+    category: quality
+    method: command
+    command: cargo fmt --all --check
+    expected:
+      exit_code: 0
+
+  - id: M03-TC-002
+    title: CurrentEL is read and decoded correctly
+    category: architecture
+    method: static_review
+    expected:
+      requirements:
+        - CurrentEL is read using an AArch64 system register instruction
+        - Bits 3 through 2 are decoded
+        - Values 0 through 3 map to EL0 through EL3
+        - Unknown values are not silently accepted
+        - CurrentEL is read only under the boot-entry precondition of EL1 or higher
+
+  - id: M03-TC-003
+    title: Exception Level policy covers every architectural level
+    category: boot
+    method: static_review
+    expected:
+      policy:
+        EL3: report_error_and_park
+        EL2: transition_to_EL1h
+        EL1: continue_without_transition
+        EL0: outside_supported_boot_contract
+
+  - id: M03-TC-004
+    title: EL2 transitions safely to EL1h
+    category: boot
+    method: static_review
+    expected:
+      requirements:
+        - HCR_EL2.RW selects AArch64 execution at EL1
+        - CPTR_EL2.TFP does not trap EL1 FP or Advanced SIMD
+        - SP_EL1 is valid and 16-byte aligned
+        - ELR_EL2 points to the EL1 continuation
+        - SPSR_EL2 selects EL1h
+        - SPSR_EL2 masks D, A, I, and F
+        - ERET performs the transition
+        - The boot DTB address survives the transition
+
+  - id: M03-TC-005
+    title: EL1 entry continues without an unnecessary transition
+    category: boot
+    method: static_review
+    expected:
+      requirements:
+        - EL1 does not execute ERET
+        - EL1 does not access EL2-only registers
+        - Boot stack and BSS initialization still execute
+        - Rust entry occurs only after EL1 setup completes
+
+  - id: M03-TC-006
+    title: EL3 is rejected and EL0 is excluded by the boot contract
+    category: boot
+    method: static_review
+    expected:
+      requirements:
+        - EL3 does not enter Rust
+        - EL3 has an explicit diagnostic path
+        - EL3 cannot fall through to normal boot
+        - EL3 remains parked after reporting
+        - EL0 is documented as an invalid kernel boot-entry state
+        - No code claims to read CurrentEL or report UART output from EL0
+
+  - id: M03-TC-007
+    title: Required EL1 registers are reported
+    category: diagnostics
+    method: static_review
+    expected:
+      output_order:
+        - CurrentEL
+        - MPIDR_EL1
+        - SCTLR_EL1
+      requirements:
+        - CurrentEL displays EL1
+        - MPIDR_EL1 is displayed as 16 hexadecimal digits
+        - SCTLR_EL1 is displayed as 16 hexadecimal digits
+        - Register reporting does not allocate
+        - Register reporting does not use std
+
+  - id: M03-TC-008
+    title: M02 UART behavior is preserved
+    category: regression
+    method: static_review
+    expected:
+      call_order:
+        - Complete EL normalization
+        - Enter the Rust board start function
+        - Write "Haechix M02: QEMU UART OK\n"
+        - Write the M03 diagnostics
+        - Call kernel::start
+
+  - id: M03-TC-009
+    title: FP and Advanced SIMD remain available after normalization
+    category: regression
+    method: static_review
+    expected:
+      EL2_path:
+        - CPTR_EL2.TFP is clear before ERET
+        - CPACR_EL1.FPEN is 0b11 before Rust entry
+      EL1_path:
+        - CPACR_EL1.FPEN is 0b11 before Rust entry
+      all_paths:
+        - ISB follows the CPACR_EL1 update
+        - Rust does not execute before these conditions hold
+
+  - id: M03-TC-010
+    title: Architecture ownership boundaries are preserved
+    category: architecture
+    method: static_review
+    expected:
+      rules:
+        - AArch64 register mechanisms belong to arch-aarch64
+        - QEMU UART addresses remain in boards/qemu-virt
+        - crates/arch-aarch64 contains no QEMU UART address
+        - crates/kernel contains no Exception Level transition code
+        - crates/kernel does not depend on a board crate
+
+  - id: M03-TC-011
+    title: QEMU board cross-build succeeds
+    category: build
+    method: command
+    command: cargo build --target aarch64-unknown-none -p haechix-qemu-virt
+    expected:
+      exit_code: 0
+      forbidden_warnings:
+        - "cannot find entry symbol _start"
+
+  - id: M03-TC-012
+    title: Raspberry Pi 5 cross-build compatibility is retained
+    category: regression
+    method: command
+    command: cargo build --target aarch64-unknown-none -p haechix-rpi5
+    expected:
+      exit_code: 0
+      permitted_warnings:
+        - "cannot find entry symbol _start"
+      limitations:
+        - This is not Raspberry Pi 5 hardware validation
+        - Raspberry Pi 5 EL normalization remains unimplemented
+
+  - id: M03-TC-013
+    title: Default QEMU profile completes at EL1
+    category: runtime
+    method: manual_qemu
+    preconditions:
+      - M03-TC-011 passed
+    command: >
+      qemu-system-aarch64
+      -machine virt
+      -cpu cortex-a76
+      -smp 1
+      -m 256M
+      -nographic
+      -kernel target/aarch64-unknown-none/debug/haechix-qemu-virt
+    exit_sequence:
+      - Press Ctrl+A
+      - Press X
+    expected:
+      terminal_lines_in_order:
+        - "Haechix M02: QEMU UART OK"
+        - "Haechix M03: EL1 OK"
+        - "CurrentEL=EL1"
+      terminal_line_patterns:
+        - "^MPIDR_EL1=0x[0-9a-f]{16}$"
+        - "^SCTLR_EL1=0x[0-9a-f]{16}$"
+      processor_state_after_output: WFE parking loop
+
+  - id: M03-TC-014
+    title: QEMU EL2 profile transitions to EL1
+    category: runtime
+    method: manual_qemu_gdb
+    preconditions:
+      - M03-TC-011 passed
+      - QEMU virtualization profile starts the binary at EL2
+    qemu_command: >
+      qemu-system-aarch64
+      -machine virt,virtualization=on
+      -cpu cortex-a76
+      -smp 1
+      -m 256M
+      -nographic
+      -S
+      -s
+      -kernel target/aarch64-unknown-none/debug/haechix-qemu-virt
+    gdb_command: >
+      gdb-multiarch
+      target/aarch64-unknown-none/debug/haechix-qemu-virt
+    gdb_checks:
+      - At _start, "print/x ($cpsr & 0xc)" reports 0x8
+      - Set a breakpoint at the Rust board start function
+      - At Rust start, "print/x ($cpsr & 0xc)" reports 0x4
+      - Continue execution
+    expected:
+      initial_level: EL2
+      rust_entry_level: EL1
+      terminal_lines_in_order:
+        - "Haechix M02: QEMU UART OK"
+        - "Haechix M03: EL1 OK"
+        - "CurrentEL=EL1"
+
+  - id: M03-TC-015
+    title: Later kernel features remain unimplemented
+    category: scope_guard
+    method: static_review
+    lifecycle: milestone_boundary_only
+    expected_absent:
+      - Full exception vector
+      - IRQ handler
+      - Generic timer initialization
+      - GIC initialization
+      - Device Tree parser
+      - Page allocator
+      - MMU enablement
+      - Kernel scheduler
+      - Userspace entry
+      - Syscall handler
+      - SMP initialization
+
+completion:
+  primary_condition: >
+    QEMU reaches Rust at EL1 for both the direct EL1 path and
+    the validated EL2 to EL1h transition path, while preserving
+    M02 UART output and reporting the required EL1 registers.
+
+  required_test_cases:
+    - M03-TC-001
+    - M03-TC-002
+    - M03-TC-003
+    - M03-TC-004
+    - M03-TC-005
+    - M03-TC-006
+    - M03-TC-007
+    - M03-TC-008
+    - M03-TC-009
+    - M03-TC-010
+    - M03-TC-011
+    - M03-TC-012
+    - M03-TC-013
+    - M03-TC-014
+    - M03-TC-015
+
+  interpretation:
+    - M03 guarantees that Rust and kernel code execute at EL1
+    - EL2 transition behavior must be validated and not only reviewed statically
+    - EL3 remains unsupported and is explicitly parked
+    - EL0 is outside the supported boot contract because CurrentEL is not readable at EL0
+    - M02 UART transmission must remain operational
+    - A successful build alone does not complete M03
+    - Full exception handling begins in a later milestone
+    - M04 functionality must remain unimplemented
