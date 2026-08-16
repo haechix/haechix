@@ -1,0 +1,305 @@
+schema_version: 1
+document_type: milestone_test_spec
+
+project: haechix
+phase:
+  id: A
+  title: QEMU Minimal Boot
+
+milestone:
+  id: M02
+  title: QEMU PL011 Polling UART TX
+  objective: >
+    Transmit one fixed line through the QEMU virt PL011 UART
+    using polling-based MMIO writes.
+
+environment:
+  working_directory: repository_root
+  host: WSL2 Ubuntu
+  rust_version: "1.97.1"
+  target: aarch64-unknown-none
+  qemu_machine: virt
+  qemu_cpu: cortex-a76
+  virtual_cpu_count: 1
+  memory: 256M
+  rust_execution_contract:
+    abi: hard-float
+    required_features:
+      - FP
+      - Advanced SIMD
+    boot_requirement: >
+      EL1 access to FP and Advanced SIMD must be enabled
+      before entering Rust code.
+
+hardware_contract:
+  device: PL011 UART
+  qemu_base_address: "0x09000000"
+  data_register_offset: "0x00"
+  flag_register_offset: "0x18"
+  transmit_fifo_full_bit: 5
+  transmit_fifo_full_mask: "0x20"
+
+output_contract:
+  text: "Haechix M02: QEMU UART OK\n"
+  displayed_line: "Haechix M02: QEMU UART OK"
+  encoding: ASCII
+  newline:
+    byte: "0x0A"
+    name: LF
+  occurrence_count: 1
+
+ownership:
+  drivers:
+    - Defines the reusable PL011 implementation
+    - Receives the MMIO base address from its caller
+    - Must not contain the QEMU UART base address
+
+  qemu_board:
+    - Owns the QEMU PL011 base address
+    - Constructs the PL011 driver
+    - Writes the M02 validation line
+    - Calls kernel::start after board UART validation
+
+  kernel:
+    - Must not contain the QEMU UART base address
+    - Must not depend on QEMU-specific code
+
+scope:
+  included:
+    - PL011 data and flag register definitions
+    - Volatile 32-bit MMIO access
+    - Transmit FIFO full polling
+    - Single-byte transmission
+    - String transmission
+    - QEMU board UART address injection
+    - One fixed validation line
+    - QEMU terminal output validation
+    - EL1 FP and Advanced SIMD access before Rust entry
+
+  excluded_at_completion:
+    - UART receive
+    - Interrupt-driven UART
+    - UART initialization beyond minimum QEMU transmission
+    - Logging framework
+    - Formatting macros
+    - Panic output
+    - Device Tree parsing
+    - Exception vector
+    - Exception-level transition
+    - MMU
+    - Allocator
+    - Timer
+    - Raspberry Pi 5 UART implementation
+    - Raspberry Pi 5 hardware validation
+
+artifacts:
+  driver_root: crates/drivers/src
+  qemu_board_entry: boards/qemu-virt/src/main.rs
+  qemu_binary: target/aarch64-unknown-none/debug/haechix-qemu-virt
+  qemu_boot_entry: boards/qemu-virt/src/boot.S
+
+test_cases:
+  - id: M02-TC-001
+    title: Workspace formatting is valid
+    category: quality
+    method: command
+    command: cargo fmt --all --check
+    expected:
+      exit_code: 0
+      stdout: empty
+
+  - id: M02-TC-002
+    title: PL011 register definitions match the QEMU device
+    category: driver
+    method: static_review
+    expected:
+      data_register_offset: "0x00"
+      flag_register_offset: "0x18"
+      transmit_fifo_full_bit: 5
+      transmit_fifo_full_mask: "0x20"
+
+  - id: M02-TC-003
+    title: Platform MMIO ownership boundaries are preserved
+    category: architecture
+    method: static_review
+    expected:
+      rules:
+        - The PL011 driver receives its base address from the caller
+        - The QEMU UART base address exists only in boards/qemu-virt
+        - The QEMU UART base address does not appear in crates/drivers
+        - The QEMU UART base address does not appear in crates/kernel
+        - The kernel does not depend on a board crate
+
+  - id: M02-TC-004
+    title: MMIO access uses volatile operations
+    category: unsafe
+    method: static_review
+    expected:
+      requirements:
+        - PL011 register reads use core::ptr::read_volatile
+        - PL011 register writes use core::ptr::write_volatile
+        - Unsafe MMIO operations include documented safety invariants
+        - Register addresses are valid and aligned for 32-bit access
+        - The driver does not create normal references to MMIO registers
+
+  - id: M02-TC-005
+    title: Transmit waits while the FIFO is full
+    category: driver
+    method: static_review
+    expected:
+      behavior:
+        - Read the PL011 flag register
+        - Test transmit FIFO full bit 5
+        - Continue polling while the bit is set
+        - Write to the data register only after the bit is clear
+
+  - id: M02-TC-006
+    title: Byte transmission writes to the data register
+    category: driver
+    method: static_review
+    expected:
+      input_type: u8
+      register: PL011 data register
+      write_width_bits: 32
+      allocation: none
+
+  - id: M02-TC-007
+    title: String transmission preserves byte order
+    category: driver
+    method: static_review
+    expected:
+      behavior:
+        - Iterate over the input string bytes in order
+        - Send every byte through the polling byte transmitter
+        - Do not allocate
+        - Do not use std
+        - Do not use a formatting framework
+
+  - id: M02-TC-008
+    title: QEMU board emits the validation line before entering the kernel
+    category: board
+    method: static_review
+    file: boards/qemu-virt/src/main.rs
+    expected:
+      call_order:
+        - Construct PL011 with base address 0x09000000
+        - Write "Haechix M02: QEMU UART OK\n"
+        - Call kernel::start
+
+  - id: M02-TC-009
+    title: QEMU board cross-build succeeds
+    category: build
+    method: command
+    command: cargo build --target aarch64-unknown-none -p haechix-qemu-virt
+    expected:
+      exit_code: 0
+      forbidden_warnings:
+        - "cannot find entry symbol _start"
+
+  - id: M02-TC-010
+    title: Raspberry Pi 5 cross-build compatibility is retained
+    category: regression
+    method: command
+    command: cargo build --target aarch64-unknown-none -p haechix-rpi5
+    expected:
+      exit_code: 0
+      permitted_warnings:
+        - "cannot find entry symbol _start"
+      limitations:
+        - This is not Raspberry Pi 5 hardware validation
+        - Raspberry Pi 5 UART remains unimplemented
+
+  - id: M02-TC-011
+    title: QEMU displays the exact validation line
+    category: runtime
+    method: manual_qemu
+    preconditions:
+      - M02-TC-009 passed
+    command: >
+      qemu-system-aarch64
+      -machine virt
+      -cpu cortex-a76
+      -smp 1
+      -m 256M
+      -nographic
+      -kernel target/aarch64-unknown-none/debug/haechix-qemu-virt
+    exit_sequence:
+      - Press Ctrl+A
+      - Press X
+    expected:
+      terminal_contains:
+        - "Haechix M02: QEMU UART OK"
+      output_occurrence_count: 1
+      processor_state_after_output: WFE parking loop
+
+  - id: M02-TC-012
+    title: Later UART and kernel features remain unimplemented
+    category: scope_guard
+    method: static_review
+    lifecycle: milestone_boundary_only
+    expected_absent:
+      - UART receive path
+      - UART interrupt handler
+      - Logging framework
+      - Formatting macros
+      - Panic UART output
+      - Device Tree parser
+      - Exception vector
+      - MMU configuration
+      - Allocator
+      - Timer initialization
+
+  - id: M02-TC-013
+    title: FP and Advanced SIMD access is enabled before Rust entry
+    category: boot
+    method: static_and_runtime_review
+    file: boards/qemu-virt/src/boot.S
+    regression_origin:
+      symptom: >
+        QEMU entered the EL1 synchronous exception vector
+        before the first UART MMIO read.
+      exception_class: "0x07"
+      faulting_instruction: "fmov d0, x1"
+    expected:
+      current_exception_level: EL1
+      control_register: CPACR_EL1
+      field: FPEN
+      field_bits: "21:20"
+      field_value: "0b11"
+      instruction_order:
+        - Read CPACR_EL1
+        - Preserve unrelated bits and set FPEN
+        - Write CPACR_EL1
+        - Execute ISB
+        - Enter Rust start
+    limitations:
+      - Validated only for the current QEMU EL1 boot path
+      - Exception-level normalization remains deferred
+
+completion:
+  primary_condition: >
+    QEMU virt with the Cortex-A76 CPU model displays exactly one
+    "Haechix M02: QEMU UART OK" line through the PL011 UART.
+
+  required_test_cases:
+    - M02-TC-001
+    - M02-TC-002
+    - M02-TC-003
+    - M02-TC-004
+    - M02-TC-005
+    - M02-TC-006
+    - M02-TC-007
+    - M02-TC-008
+    - M02-TC-009
+    - M02-TC-010
+    - M02-TC-011
+    - M02-TC-012
+    - M02-TC-013
+
+  interpretation:
+    - M02 validates polling-based QEMU UART transmission
+    - A successful build alone does not complete M02
+    - Raspberry Pi 5 UART is not validated
+    - M03 functionality must remain unimplemented
+    - The selected Rust target requires FP and Advanced SIMD access before Rust execution
+    - Exception-level normalization remains deferred to a later milestone    

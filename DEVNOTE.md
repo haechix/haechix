@@ -124,8 +124,19 @@
 - QEMU 및 Raspberry Pi 5 AArch64 cross-build 성공
 - Raspberry Pi 5의 `_start` 경고는 해당 포팅 단계까지 의도적으로 유예
 
-
-
+### Haechix M02: QEMU UART OK
+| 작업 | 내용 |
+|---|---|
+| M02-A | 테스트 계약과 정확한 출력 문자열 정의 |
+| M02-B | `drivers`에 PL011 모듈과 register offset 정의 |
+| M02-C | volatile MMIO read/write 경계 구현 |
+| M02-D | TX FIFO full bit polling 구현 |
+| M02-E | byte 및 문자열 송신 구현 |
+| M02-F | QEMU board에서 UART 주소 주입 |
+| M02-G | board `start()`에서 문자열 출력 |
+| M02-H | Rust 진입 전 EL1 FP/Advanced SIMD 접근 허용 |
+| M02-I | format, QEMU 및 RPi5 회귀 빌드 |
+| M02-J | QEMU에서 실제 문자열 출력 확인 |
 
 
 
