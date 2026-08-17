@@ -8,6 +8,7 @@ members = [
     "crates/user-abi",
     "boards/qemu-virt",
     "boards/rpi5",
+    "crates/fdt",
 ]
 
 [profile.dev]
@@ -22,3 +23,4 @@ arch-aarch64 = { package = "haechix-arch-aarch64", path = "crates/arch-aarch64" 
 drivers = { package = "haechix-drivers", path = "crates/drivers" }
 boot-protocol = { package = "haechix-boot-protocol", path = "crates/boot-protocol" }
 user-abi = { package = "haechix-user-abi", path = "crates/user-abi" }
+fdt = { package = "haechix-fdt", path = "crates/fdt" }

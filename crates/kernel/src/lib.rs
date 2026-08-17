@@ -2,5 +2,7 @@
 // without linking Rust's OS-dependent standard library (`std`).
 #![no_std]
 
-/// Starts the platform-independent kernel after board boot initialization.
-pub fn start() {}
+use boot_protocol::BootInfo;
+
+/// Starts the platform-independent kernel with validated platform information.
+pub fn start(_boot_info: &BootInfo) {}

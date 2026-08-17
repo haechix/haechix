@@ -27,11 +27,12 @@
 3. `crates/drivers` contains reusable device implementations.
 4. `crates/boot-protocol` defines the boot-time board/kernel contract.
 5. `crates/user-abi` defines the future userspace/kernel binary contract.
-6. `boards/qemu-virt` owns QEMU-specific addresses and initialization.
-7. `boards/rpi5` owns Raspberry Pi 5-specific addresses and initialization.
-8. The kernel must not depend on a board crate.
-9. Board-specific MMIO addresses must not appear in the kernel.
-10. Platform differences must be supplied through explicit data or interfaces.
+6. `crates/fdt` contains reusable, allocation-free FDT parsing and no board-specific addresses.
+7. `boards/qemu-virt` owns QEMU-specific addresses and initialization.
+8. `boards/rpi5` owns Raspberry Pi 5-specific addresses and initialization.
+9. The kernel must not depend on a board crate.
+10. Board-specific MMIO addresses must not appear in the kernel.
+11. Platform differences must be supplied through explicit data or interfaces.
 
 ## Rust and Memory
 
@@ -60,6 +61,7 @@ Run the validation appropriate for the current milestone:
 4. QEMU smoke tests where applicable
 5. GDB validation where required
 6. Raspberry Pi 5 hardware validation only on real hardware
+7. Use Python with PyYAML for YAML validation; do not use Ruby tooling.
 
 ## Reporting
 

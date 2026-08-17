@@ -1,0 +1,733 @@
+schema_version: 1
+document_type: milestone_test_spec
+
+project: haechix
+phase:
+  id: A
+  title: QEMU Minimal Boot
+
+milestone:
+  id: M04
+  title: Minimal DTB Parser
+  objective: >
+    Receive the QEMU virt Device Tree Blob address through AArch64 x0,
+    validate and parse the minimum required FDT data without allocation,
+    construct BootInfo, and pass normalized platform information to
+    the platform-independent kernel.
+
+environment:
+  working_directory: repository_root
+  host: WSL2 Ubuntu
+  rust_version: "1.97.1"
+  target: aarch64-unknown-none
+  qemu_machine: virt
+  qemu_cpu: cortex-a76
+  virtual_cpu_count: 1
+  memory: 256M
+
+boot_entry_contract:
+  kernel_entry_symbol: _start
+  kernel_entry_address: "0x40080000"
+  runtime_image_format: raw_binary
+  debug_image_format: elf
+  dtb_register: x0
+  dtb_address_type: physical_address
+  requirements:
+    - The raw binary is produced from the linked ELF with llvm-objcopy
+    - QEMU runs the raw kernel binary through its AArch64 boot protocol
+    - The ELF is retained for symbols and source-level GDB debugging
+    - The QEMU boot stub jumps to _start at 0x40080000
+    - QEMU places the DTB physical address in x0 before entering _start
+    - _start preserves x0 through Exception Level normalization
+    - The Rust board start function receives x0 as its first argument
+    - DTB contents do not determine the kernel entry address
+
+fdt_format_contract:
+  byte_order: big-endian
+  header_size_bytes: 40
+  magic:
+    value: "0xd00dfeed"
+    width_bits: 32
+
+  supported_header_fields:
+    - magic
+    - totalsize
+    - off_dt_struct
+    - off_dt_strings
+    - off_mem_rsvmap
+    - version
+    - last_comp_version
+    - boot_cpuid_phys
+    - size_dt_strings
+    - size_dt_struct
+
+  supported_tokens:
+    FDT_BEGIN_NODE: 1
+    FDT_END_NODE: 2
+    FDT_PROP: 3
+    FDT_NOP: 4
+    FDT_END: 9
+
+  alignment:
+    structure_token_bytes: 4
+    node_name_bytes: 4
+    property_value_bytes: 4
+
+  version_policy:
+    minimum_supported_version: 17
+    maximum_last_compatible_version: 17
+
+qemu_platform_contract:
+  root_compatible: linux,dummy-virt
+
+  memory:
+    start: "0x0000000040000000"
+    size: "0x0000000010000000"
+    end_exclusive: "0x0000000050000000"
+
+  console:
+    device: PL011
+    base_address: "0x0000000009000000"
+    bootstrap_base_address: "0x09000000"
+
+  interrupt_controller:
+    base_address: "0x0000000008000000"
+
+boot_info_contract:
+  owner: crates/boot-protocol
+  fields:
+    memory_start:
+      rust_type: usize
+      source: memory node first reg address
+
+    memory_size:
+      rust_type: usize
+      source: memory node first reg size
+
+    uart_base:
+      rust_type: usize
+      source: chosen stdout-path target node first reg address
+
+    interrupt_controller_base:
+      rust_type: usize
+      source: first interrupt-controller node first reg address
+
+  requirements:
+    - BootInfo contains no QEMU-specific constants
+    - BootInfo does not borrow from the DTB
+    - BootInfo is constructed only after all required fields are validated
+    - Integer conversion to usize is checked
+    - The kernel receives BootInfo through an explicit reference
+
+parser_ownership:
+  fdt:
+    path: crates/fdt
+    responsibilities:
+      - Define a reusable no_std FDT parser
+      - Validate FDT header and block bounds
+      - Decode big-endian integer values
+      - Walk supported FDT structure tokens
+      - Return borrowed strings and property byte slices
+      - Contain no QEMU-specific addresses
+      - Perform no dynamic allocation
+
+  boot_protocol:
+    path: crates/boot-protocol
+    responsibilities:
+      - Define BootInfo
+      - Contain no raw DTB pointer operations
+      - Contain no QEMU-specific addresses
+
+  qemu_board:
+    path: boards/qemu-virt
+    responsibilities:
+      - Receive the DTB address from x0
+      - Own the unsafe raw-pointer entry boundary
+      - Own the bootstrap UART address
+      - Select required QEMU platform nodes
+      - Construct BootInfo
+      - Report DTB parsing errors
+      - Call kernel::start only after successful parsing
+
+  kernel:
+    path: crates/kernel
+    responsibilities:
+      - Receive normalized BootInfo
+      - Remain independent of raw FDT layout
+      - Remain independent of QEMU-specific addresses
+      - Not depend on the FDT parser crate
+
+  drivers:
+    path: crates/drivers
+    responsibilities:
+      - Continue providing the reusable PL011 implementation
+      - Receive the UART base address from its caller
+      - Not parse DTB data
+
+unsafe_contract:
+  raw_pointer_boundary:
+    owner: boards/qemu-virt
+    requirements:
+      - Reject a null DTB address
+      - Require the boot protocol alignment for the DTB address
+      - Document that the boot environment must provide a readable FDT header
+      - Read enough bytes to determine totalsize without creating references
+      - Construct a byte slice only after totalsize validation
+      - Contain a documented safety invariant
+
+  safe_parser_boundary:
+    owner: crates/fdt
+    input: borrowed byte slice
+    requirements:
+      - All offset calculations use checked arithmetic
+      - All ranges remain inside totalsize
+      - Invalid UTF-8 is rejected
+      - Unterminated strings are rejected
+      - Unknown structure tokens are rejected
+      - Truncated properties are rejected
+      - No unchecked indexing is used
+
+bootstrap_uart_contract:
+  reason: >
+    DTB parsing errors must be reportable before the DTB-provided UART
+    address is available.
+
+  requirements:
+    - The hard-coded QEMU UART address exists only in boards/qemu-virt
+    - The bootstrap PL011 is used before DTB parsing completes
+    - The parsed UART address must equal the QEMU bootstrap address
+    - The bootstrap PL011 ownership ends before another PL011 is constructed
+    - Two live Pl011 instances must not alias the same MMIO register block
+    - DTB-based UART output begins only after successful parsing
+
+property_contract:
+  root:
+    required_properties:
+      - compatible
+      - "#address-cells"
+      - "#size-cells"
+
+  compatible:
+    location: root
+    representation: NUL-terminated string list
+    selected_value: first compatible string
+    expected_value: linux,dummy-virt
+
+  memory:
+    node_match:
+      - node name starts with memory@
+      - device_type equals memory
+    required_properties:
+      - reg
+    selected_range: first reg tuple
+
+  chosen:
+    path: /chosen
+    required_properties:
+      - stdout-path
+
+  stdout_path:
+    representation: NUL-terminated string
+    supported_form: absolute node path
+    optional_suffix_separator: ":"
+    behavior:
+      - Remove an optional suffix beginning with a colon
+      - Resolve the remaining absolute node path
+      - Read the target node first reg tuple
+    excluded_forms:
+      - alias-based stdout-path
+      - phandle-based console selection
+
+  interrupt_controller:
+    node_match:
+      - interrupt-controller property is present
+    required_properties:
+      - reg
+    selected_range: first reg tuple
+
+cell_contract:
+  supported_address_cells:
+    - 1
+    - 2
+
+  supported_size_cells:
+    - 1
+    - 2
+
+  requirements:
+    - Cell values are decoded as big-endian u32 values
+    - Two address cells are combined into one u64 value
+    - Two size cells are combined into one u64 value
+    - Child reg properties use the parent node cell counts
+    - Unsupported cell counts return an explicit error
+    - Cell multiplication and slice length calculations are checked
+
+output_contract:
+  inherited_lines:
+    - "Haechix M02: QEMU UART OK"
+    - "Haechix M03: EL1 OK"
+    - "CurrentEL=EL1"
+
+  success_lines:
+    - "Haechix M04: DTB OK"
+    - "compatible=linux,dummy-virt"
+    - "memory=0x0000000040000000..0x0000000050000000"
+    - "console=pl011@0x0000000009000000"
+    - "interrupt-controller=0x0000000008000000"
+
+  error_prefix: "Haechix M04: DTB error: "
+
+  expected_order:
+    - M02 UART validation
+    - M03 Exception Level validation
+    - M03 register output
+    - M04 DTB validation
+    - root compatible
+    - memory range
+    - console UART
+    - interrupt controller
+    - kernel::start
+
+scope:
+  included:
+    - New reusable no_std FDT parser crate
+    - BootInfo in boot-protocol
+    - AArch64 x0 DTB address handoff
+    - FDT header and magic validation
+    - FDT version validation
+    - FDT structure and strings block bounds validation
+    - Big-endian u32 and u64 decoding
+    - FDT structure token traversal
+    - Root compatible parsing
+    - Root address-cells and size-cells parsing
+    - First memory range parsing
+    - Chosen stdout-path parsing
+    - Absolute stdout-path node resolution
+    - PL011 reg base extraction
+    - First interrupt controller reg base extraction
+    - BootInfo construction
+    - Bootstrap UART to parsed UART ownership transition
+    - M02 and M03 regression validation
+    - Default EL1 and EL2-to-EL1 QEMU profile validation
+
+  excluded_at_completion:
+    - Complete Device Tree specification
+    - Device Tree mutation
+    - Device Tree overlays
+    - Alias resolution
+    - Phandle resolution
+    - Interrupt specifier parsing
+    - Multiple memory range management
+    - Reserved-memory management
+    - Device status filtering
+    - Dynamic allocation
+    - MMU
+    - Exception vector
+    - IRQ handling
+    - Generic timer
+    - Scheduler
+    - Userspace
+    - Raspberry Pi 5 DTB runtime validation
+
+artifacts:
+  workspace_manifest: Cargo.toml
+  fdt_crate: crates/fdt
+  fdt_source: crates/fdt/src
+  boot_protocol_source: crates/boot-protocol/src
+  qemu_boot_entry: boards/qemu-virt/src/boot.S
+  qemu_board_entry: boards/qemu-virt/src/main.rs
+  kernel_entry: crates/kernel/src/lib.rs
+  qemu_elf: target/aarch64-unknown-none/debug/haechix-qemu-virt
+  qemu_raw_binary: target/aarch64-unknown-none/debug/haechix-qemu-virt.bin
+
+test_cases:
+  - id: M04-TC-001
+    title: Workspace formatting is valid
+    category: quality
+    method: command
+    command: cargo fmt --all --check
+    expected:
+      exit_code: 0
+
+  - id: M04-TC-002
+    title: FDT parser crate preserves architecture boundaries
+    category: architecture
+    method: static_review
+    expected:
+      requirements:
+        - crates/fdt uses no_std
+        - crates/fdt performs no dynamic allocation
+        - crates/fdt contains no QEMU MMIO address
+        - crates/fdt contains no AArch64 system-register access
+        - crates/kernel does not depend on crates/fdt
+        - crates/drivers does not depend on crates/fdt
+
+  - id: M04-TC-003
+    title: BootInfo defines the normalized board-to-kernel contract
+    category: architecture
+    method: static_review
+    expected:
+      owner: crates/boot-protocol
+      fields:
+        - memory_start
+        - memory_size
+        - uart_base
+        - interrupt_controller_base
+      field_type: usize
+      requirements:
+        - BootInfo contains no raw DTB pointer
+        - BootInfo contains no borrowed DTB data
+        - BootInfo contains no QEMU-specific constant
+
+  - id: M04-TC-004
+    title: DTB address is preserved from QEMU x0 to Rust
+    category: boot
+    method: static_and_gdb_review
+    expected:
+      requirements:
+        - _start does not overwrite x0
+        - aarch64_normalize_to_el1 preserves x0
+        - EL2 to EL1 ERET preserves x0
+        - The board start function accepts dtb_address as its first argument
+        - kernel::start does not receive a raw DTB pointer
+
+  - id: M04-TC-005
+    title: FDT header and magic are validated
+    category: parser
+    method: unit_and_static_review
+    expected:
+      requirements:
+        - The input contains at least 40 header bytes
+        - Magic equals 0xd00dfeed
+        - totalsize is at least the header size
+        - totalsize does not exceed the supplied slice
+        - FDT version is supported
+        - last compatible version is supported
+
+  - id: M04-TC-006
+    title: FDT block bounds and arithmetic are validated
+    category: safety
+    method: unit_and_static_review
+    expected:
+      requirements:
+        - Structure block offset and size remain inside totalsize
+        - Strings block offset and size remain inside totalsize
+        - Reserve-map offset remains inside totalsize
+        - Offset plus size uses checked arithmetic
+        - Property length alignment uses checked arithmetic
+        - Invalid or overlapping ranges are rejected where required
+        - No parser operation reads past the supplied slice
+
+  - id: M04-TC-007
+    title: Supported FDT structure tokens are traversed
+    category: parser
+    method: unit_and_static_review
+    expected:
+      supported_tokens:
+        - FDT_BEGIN_NODE
+        - FDT_END_NODE
+        - FDT_PROP
+        - FDT_NOP
+        - FDT_END
+      requirements:
+        - Node depth cannot underflow
+        - Node names are NUL terminated
+        - Node names are aligned to four bytes
+        - Properties are associated with the active node
+        - FDT_END terminates traversal
+        - Unknown tokens return an explicit error
+
+  - id: M04-TC-008
+    title: FDT strings and properties are borrowed safely
+    category: parser
+    method: unit_and_static_review
+    expected:
+      requirements:
+        - Property name offsets are relative to the strings block
+        - Property names remain inside the strings block
+        - Property names are NUL terminated
+        - Text properties are valid UTF-8
+        - Property values remain borrowed byte slices
+        - Parser output does not allocate
+
+  - id: M04-TC-009
+    title: Address and size cells decode reg tuples
+    category: parser
+    method: unit_and_static_review
+    expected:
+      requirements:
+        - One-cell addresses decode to u64
+        - Two-cell addresses decode to u64
+        - One-cell sizes decode to u64
+        - Two-cell sizes decode to u64
+        - Parent cell counts apply to child reg properties
+        - Unsupported cell counts return an explicit error
+        - Incomplete reg tuples return an explicit error
+
+  - id: M04-TC-010
+    title: Root compatible and memory range are extracted
+    category: platform
+    method: unit_and_runtime_review
+    expected:
+      compatible: linux,dummy-virt
+      memory_start: "0x0000000040000000"
+      memory_size: "0x0000000010000000"
+      memory_end_exclusive: "0x0000000050000000"
+
+  - id: M04-TC-011
+    title: Chosen stdout-path resolves the console UART
+    category: platform
+    method: unit_and_runtime_review
+    expected:
+      requirements:
+        - /chosen contains stdout-path
+        - stdout-path is an absolute node path
+        - An optional colon suffix is removed
+        - The target node exists
+        - The target node contains reg
+        - The first reg address is 0x09000000
+        - The parsed device is compatible with PL011
+
+  - id: M04-TC-012
+    title: Interrupt controller base address is extracted
+    category: platform
+    method: unit_and_runtime_review
+    expected:
+      requirements:
+        - A node contains the interrupt-controller property
+        - The node contains reg
+        - The first reg address is 0x08000000
+        - Interrupt specifiers are not parsed in M04
+
+  - id: M04-TC-013
+    title: Invalid DTB data is rejected before kernel entry
+    category: error_handling
+    method: unit_and_static_review
+    expected:
+      invalid_inputs:
+        - Null DTB address
+        - Misaligned DTB address
+        - Truncated header
+        - Invalid magic
+        - Unsupported version
+        - Out-of-range structure block
+        - Out-of-range strings block
+        - Unterminated node name
+        - Unterminated property name
+        - Invalid UTF-8 string
+        - Unknown structure token
+        - Missing compatible
+        - Missing memory range
+        - Missing stdout-path
+        - Missing UART reg
+        - Missing interrupt controller reg
+      requirements:
+        - An error is reported through the bootstrap UART
+        - kernel::start is not called
+        - The board returns to the assembly parking loop
+
+  - id: M04-TC-014
+    title: Bootstrap and parsed UART ownership do not overlap
+    category: unsafe
+    method: static_review
+    expected:
+      requirements:
+        - Only one live Pl011 owns the QEMU MMIO block
+        - The bootstrap UART is released before parsed UART construction
+        - Parsed uart_base equals the QEMU bootstrap address
+        - Every Pl011 construction documents its safety invariant
+
+  - id: M04-TC-015
+    title: Synthetic FDT parser unit tests pass
+    category: test
+    method: command
+    command: cargo test -p haechix-fdt
+    expected:
+      exit_code: 0
+      required_cases:
+        - Valid minimal FDT
+        - Invalid magic
+        - Truncated header
+        - Invalid block offset
+        - Unknown token
+        - Invalid strings offset
+        - One-cell reg tuple
+        - Two-cell reg tuple
+        - Absolute stdout-path with suffix
+
+  - id: M04-TC-016
+    title: FDT and boot protocol crates cross-build
+    category: build
+    method: command
+    command: >
+      cargo build
+      --target aarch64-unknown-none
+      -p haechix-fdt
+      -p haechix-boot-protocol
+    expected:
+      exit_code: 0
+
+  - id: M04-TC-017
+    title: QEMU board ELF and raw binary build succeeds
+    category: build
+    method: command_sequence
+    commands:
+      - cargo build --target aarch64-unknown-none -p haechix-qemu-virt
+      - >
+        "$(rustc --print sysroot)/lib/rustlib/x86_64-unknown-linux-gnu/bin/llvm-objcopy"
+        -O binary
+        target/aarch64-unknown-none/debug/haechix-qemu-virt
+        target/aarch64-unknown-none/debug/haechix-qemu-virt.bin
+    expected:
+      exit_code: 0
+      required_artifacts:
+        - target/aarch64-unknown-none/debug/haechix-qemu-virt
+        - target/aarch64-unknown-none/debug/haechix-qemu-virt.bin
+      forbidden_warnings:
+        - "cannot find entry symbol _start"
+
+  - id: M04-TC-018
+    title: Raspberry Pi 5 cross-build compatibility is retained
+    category: regression
+    method: command
+    command: cargo build --target aarch64-unknown-none -p haechix-rpi5
+    expected:
+      exit_code: 0
+      permitted_warnings:
+        - "cannot find entry symbol _start"
+      limitations:
+        - This is not Raspberry Pi 5 hardware validation
+        - Raspberry Pi 5 DTB runtime parsing remains unimplemented
+
+  - id: M04-TC-019
+    title: Default QEMU profile reports the parsed platform
+    category: runtime
+    method: manual_qemu
+    preconditions:
+      - M04-TC-015 passed
+      - M04-TC-017 passed
+    command: >
+      qemu-system-aarch64
+      -machine virt
+      -cpu cortex-a76
+      -smp 1
+      -m 256M
+      -nographic
+      -kernel target/aarch64-unknown-none/debug/haechix-qemu-virt.bin
+    exit_sequence:
+      - Press Ctrl+A
+      - Press X
+    expected:
+      terminal_lines_in_order:
+        - "Haechix M02: QEMU UART OK"
+        - "Haechix M03: EL1 OK"
+        - "CurrentEL=EL1"
+        - "Haechix M04: DTB OK"
+        - "compatible=linux,dummy-virt"
+        - "memory=0x0000000040000000..0x0000000050000000"
+        - "console=pl011@0x0000000009000000"
+        - "interrupt-controller=0x0000000008000000"
+      terminal_line_patterns:
+        - "^MPIDR_EL1=0x[0-9a-f]{16}$"
+        - "^SCTLR_EL1=0x[0-9a-f]{16}$"
+      processor_state_after_output: WFE parking loop
+
+  - id: M04-TC-020
+    title: EL2 profile preserves x0 and reports the parsed platform
+    category: runtime
+    method: manual_qemu_gdb
+    preconditions:
+      - M04-TC-017 passed
+      - QEMU virtualization profile starts the binary at EL2
+    qemu_command: >
+      qemu-system-aarch64
+      -machine virt,virtualization=on
+      -cpu cortex-a76
+      -smp 1
+      -m 256M
+      -nographic
+      -S
+      -s
+      -kernel target/aarch64-unknown-none/debug/haechix-qemu-virt.bin
+    gdb_command: >
+      gdb-multiarch
+      target/aarch64-unknown-none/debug/haechix-qemu-virt
+    gdb_checks:
+      - At _start, "print/x ($cpsr & 0xc)" reports 0x8
+      - Record the x0 DTB address at _start
+      - Set a breakpoint at the Rust board start function
+      - At Rust start, "print/x ($cpsr & 0xc)" reports 0x4
+      - At Rust start, x0 equals the recorded DTB address
+      - Continue execution
+    expected:
+      initial_level: EL2
+      rust_entry_level: EL1
+      dtb_address_preserved: true
+      terminal_lines_in_order:
+        - "Haechix M02: QEMU UART OK"
+        - "Haechix M03: EL1 OK"
+        - "CurrentEL=EL1"
+        - "Haechix M04: DTB OK"
+        - "compatible=linux,dummy-virt"
+
+  - id: M04-TC-021
+    title: Later kernel and FDT features remain unimplemented
+    category: scope_guard
+    method: static_review
+    lifecycle: milestone_boundary_only
+    expected_absent:
+      - Complete Device Tree specification
+      - Device Tree mutation
+      - Device Tree overlays
+      - Alias resolution
+      - Phandle resolution
+      - Interrupt specifier parsing
+      - Dynamic allocation
+      - MMU enablement
+      - Exception vector
+      - IRQ handler
+      - Generic timer initialization
+      - Kernel scheduler
+      - Userspace entry
+      - Raspberry Pi 5 DTB runtime support
+
+completion:
+  primary_condition: >
+    QEMU passes the DTB physical address through x0, Haechix validates
+    and parses the required FDT data without allocation, constructs
+    BootInfo, preserves M02 and M03 behavior, and reports the expected
+    QEMU virt platform information before entering the kernel.
+
+  required_test_cases:
+    - M04-TC-001
+    - M04-TC-002
+    - M04-TC-003
+    - M04-TC-004
+    - M04-TC-005
+    - M04-TC-006
+    - M04-TC-007
+    - M04-TC-008
+    - M04-TC-009
+    - M04-TC-010
+    - M04-TC-011
+    - M04-TC-012
+    - M04-TC-013
+    - M04-TC-014
+    - M04-TC-015
+    - M04-TC-016
+    - M04-TC-017
+    - M04-TC-018
+    - M04-TC-019
+    - M04-TC-020
+    - M04-TC-021
+
+  interpretation:
+    - M04 validates runtime hardware discovery through the QEMU-provided DTB
+    - DTB contents do not determine the kernel entry address
+    - A successful build alone does not complete M04
+    - BootInfo is the only platform information passed to the kernel
+    - The raw DTB pointer remains outside the kernel
+    - Bootstrap UART hard-coding remains board-local and temporary
+    - Raspberry Pi 5 DTB runtime parsing is not validated
+    - MMU, exception, IRQ, allocator, and scheduler work remain deferred
+    - M05 functionality must remain unimplemented

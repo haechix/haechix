@@ -8,3 +8,4 @@ kernel = { workspace = true }
 arch-aarch64 = { workspace = true }
 drivers = { workspace = true }
 boot-protocol = { workspace = true }
+fdt = { workspace = true }

@@ -140,6 +140,18 @@
 
 
 
+### Haechix M04: Minimal DTB Parser
+| 단계 | 내용 |
+|---|---|
+| M04-A | `m04.yaml` 테스트 계약 |
+| M04-B | `BootInfo` 부트 계약 정의 |
+| M04-C | `x0`의 DTB 주소를 Rust로 전달 |
+| M04-D | FDT header와 big-endian 값 검증 |
+| M04-E | structure/string block 최소 순회 |
+| M04-F | compatible, memory, chosen, stdout-path 추출 |
+| M04-G | UART와 interrupt controller 주소 해석 |
+| M04-H | `BootInfo` 구성 및 UART 출력 |
+| M04-I | 포맷·빌드·QEMU·RPi5 회귀 검증 |
 
 
 

@@ -20,6 +20,8 @@ impl Pl011 {
     pub const unsafe fn new(base_address: usize) -> Self {
         Self { base_address }
     }
+    /// Relinquishes this instance's exclusive access without changing device state.
+    pub fn release(self) {}
 
     #[inline]
     fn read_register(&self, offset: usize) -> u32 {

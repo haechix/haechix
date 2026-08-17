@@ -15,6 +15,10 @@ name = "haechix-drivers"
 version = "0.1.0"
 
 [[package]]
+name = "haechix-fdt"
+version = "0.1.0"
+
+[[package]]
 name = "haechix-kernel"
 version = "0.1.0"
 dependencies = [
@@ -29,6 +33,7 @@ dependencies = [
  "haechix-arch-aarch64",
  "haechix-boot-protocol",
  "haechix-drivers",
+ "haechix-fdt",
  "haechix-kernel",
 ]
 
