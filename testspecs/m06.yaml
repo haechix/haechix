@@ -1,0 +1,730 @@
+schema_version: 1
+document_type: milestone_test_spec
+
+project: haechix
+
+phase:
+  id: C1
+  title: CPU Event Handling
+
+milestone:
+  id: M06
+  title: EL1 Exception Vector
+  objective: >
+    Install a reusable AArch64 EL1 exception vector table, capture a complete
+    exception context, route an intentional AArch64 breakpoint exception
+    through the current-EL SPx synchronous vector, advance ELR_EL1, restore
+    the interrupted context, and resume normal Rust execution.
+
+development:
+  branch: codex/m06-exception-vector
+  base_commit: 2509bd4
+  base_milestone: M05
+  merge_gate: >
+    Merge into main only after M05 Raspberry Pi 5 hardware validation has
+    completed and the resulting main branch has been merged into this branch.
+
+environment:
+  working_directory: repository_root
+  host: WSL2 Ubuntu
+  rust_version: "1.97.1"
+  target: aarch64-unknown-none
+
+  qemu:
+    executable: qemu-system-aarch64
+    machine: virt
+    cpu: cortex-a76
+    smp: 1
+    memory_mib: 256
+    console: nographic
+
+  runtime_profiles:
+    default_el1:
+      machine_argument: virt
+      expected_rust_level: EL1
+
+    el2_normalization:
+      machine_argument: virt,virtualization=on
+      expected_initial_level: EL2
+      expected_rust_level: EL1
+
+image_contract:
+  debug_image:
+    format: ELF
+    path: target/aarch64-unknown-none/debug/haechix-qemu-virt
+    purpose:
+      - Symbol inspection
+      - Section inspection
+      - Vector-table disassembly
+      - GDB source-level debugging
+
+  runtime_image:
+    format: raw_binary
+    path: target/aarch64-unknown-none/debug/haechix-qemu-virt.bin
+    source: target/aarch64-unknown-none/debug/haechix-qemu-virt
+
+  requirements:
+    - The raw runtime image is regenerated after every relevant ELF build
+    - The ELF remains available for symbols and GDB
+    - The runtime image starts at the existing QEMU _start load address
+    - NOLOAD BSS and boot stack storage are not copied into the raw image
+
+architecture_contract:
+  owner: crates/arch-aarch64
+  execution_level: EL1h
+  exception_architecture: AArch64
+  vector_base_register: VBAR_EL1
+
+  requirements:
+    - The implementation contains no QEMU MMIO addresses
+    - The implementation contains no Raspberry Pi MMIO addresses
+    - The implementation remains no_std
+    - The implementation performs no dynamic allocation
+    - The vector mechanism is reusable by future AArch64 boards
+    - Board-specific reporting remains outside crates/arch-aarch64
+    - Exception installation does not enable IRQ, FIQ, or SError delivery
+
+vector_table_contract:
+  section: .text.exception_vector
+  base_symbol: aarch64_exception_vector_table
+  end_symbol: aarch64_exception_vector_table_end
+  alignment_bytes: 2048
+  size_bytes: 2048
+  slot_size_bytes: 128
+  slot_count: 16
+
+  slots:
+    - id: 0
+      offset: "0x000"
+      source: current_el
+      stack: sp0
+      class: synchronous
+
+    - id: 1
+      offset: "0x080"
+      source: current_el
+      stack: sp0
+      class: irq
+
+    - id: 2
+      offset: "0x100"
+      source: current_el
+      stack: sp0
+      class: fiq
+
+    - id: 3
+      offset: "0x180"
+      source: current_el
+      stack: sp0
+      class: serror
+
+    - id: 4
+      offset: "0x200"
+      source: current_el
+      stack: spx
+      class: synchronous
+      m06_runtime_test: true
+
+    - id: 5
+      offset: "0x280"
+      source: current_el
+      stack: spx
+      class: irq
+
+    - id: 6
+      offset: "0x300"
+      source: current_el
+      stack: spx
+      class: fiq
+
+    - id: 7
+      offset: "0x380"
+      source: current_el
+      stack: spx
+      class: serror
+
+    - id: 8
+      offset: "0x400"
+      source: lower_el
+      lower_state: aarch64
+      class: synchronous
+
+    - id: 9
+      offset: "0x480"
+      source: lower_el
+      lower_state: aarch64
+      class: irq
+
+    - id: 10
+      offset: "0x500"
+      source: lower_el
+      lower_state: aarch64
+      class: fiq
+
+    - id: 11
+      offset: "0x580"
+      source: lower_el
+      lower_state: aarch64
+      class: serror
+
+    - id: 12
+      offset: "0x600"
+      source: lower_el
+      lower_state: aarch32
+      class: synchronous
+
+    - id: 13
+      offset: "0x680"
+      source: lower_el
+      lower_state: aarch32
+      class: irq
+
+    - id: 14
+      offset: "0x700"
+      source: lower_el
+      lower_state: aarch32
+      class: fiq
+
+    - id: 15
+      offset: "0x780"
+      source: lower_el
+      lower_state: aarch32
+      class: serror
+
+  requirements:
+    - The base address has its lowest eleven bits clear
+    - Every slot begins at its architecturally defined offset
+    - Every slot occupies exactly 128 bytes
+    - Every slot reaches an identifiable exception entry path
+    - No slot falls through into an adjacent slot
+    - The linker retains the vector section with KEEP
+    - The vector section is executable and allocated
+    - M06 executes only the current-EL SPx synchronous slot
+    - Unhandled vector classes must not return silently
+
+linker_contract:
+  owner: boards/qemu-virt/linker.ld
+  existing_load_address: "0x40080000"
+  new_section: .text.exception_vector
+  new_section_alignment_bytes: 2048
+
+  placement:
+    after: .text.boot
+    before: .text
+
+  required_symbols:
+    - _start
+    - aarch64_exception_vector_table
+    - aarch64_exception_vector_table_end
+    - start
+
+  requirements:
+    - The existing _start entry address remains unchanged
+    - The exception vector section is retained with KEEP
+    - The exception vector section does not overlap another section
+    - The vector table end minus base equals 0x800
+    - Existing BSS and boot stack ordering remains valid
+
+exception_context_contract:
+  rust_representation: "repr(C, align(16))"
+  stack_alignment_bytes: 16
+  frame_size_multiple_bytes: 16
+
+  fields:
+    - x0
+    - x1
+    - x2
+    - x3
+    - x4
+    - x5
+    - x6
+    - x7
+    - x8
+    - x9
+    - x10
+    - x11
+    - x12
+    - x13
+    - x14
+    - x15
+    - x16
+    - x17
+    - x18
+    - x19
+    - x20
+    - x21
+    - x22
+    - x23
+    - x24
+    - x25
+    - x26
+    - x27
+    - x28
+    - x29
+    - x30
+    - sp_at_entry
+    - elr_el1
+    - spsr_el1
+    - esr_el1
+    - far_el1
+    - vector_id
+    - reserved
+
+  requirements:
+    - Rust and assembly use the same field offsets
+    - x0 through x30 are captured before Rust dispatch
+    - sp_at_entry records the interrupted stack pointer
+    - System registers are captured before Rust dispatch
+    - The frame does not violate the AArch64 stack alignment requirement
+    - The context pointer is non-null and uniquely mutable during dispatch
+    - Restored SP equals the interrupted SP
+    - Returning from the exception restores x0 through x30
+    - Restored ELR_EL1 and SPSR_EL1 are used by eret
+
+simd_preservation_contract:
+  owner: crates/arch-aarch64
+  visibility: assembly_private
+  total_exception_frame_size_bytes: 832
+  total_exception_frame_alignment_bytes: 16
+
+  saved_state:
+    - q0 through q31
+    - FPCR
+    - FPSR
+
+  layout:
+    exception_context_offset: 0
+    exception_context_size_bytes: 304
+    simd_registers_offset: 304
+    simd_registers_size_bytes: 512
+    fpcr_offset: 816
+    fpsr_offset: 824
+
+  requirements:
+    - The complete exception frame remains 16-byte aligned
+    - q0 through q31 are saved before Rust dispatch
+    - FPCR and FPSR are saved before Rust dispatch
+    - q0 through q31 are restored before eret
+    - FPCR and FPSR are restored before eret
+    - SIMD state remains private to the assembly entry implementation
+    - ExceptionContext remains exactly 304 bytes
+
+installation_contract:
+  public_module: arch_aarch64::exception
+  operation: install
+  register: VBAR_EL1
+
+  preconditions:
+    - Execution is at EL1
+    - FP and Advanced SIMD access is enabled at EL1
+    - Interrupts remain masked
+    - The boot stack is active
+    - The vector table is resident and executable
+    - Only one CPU executes the M06 installation path
+
+  required_barriers:
+    - dsb
+    - isb
+
+  postconditions:
+    - VBAR_EL1 equals the vector table base address
+    - VBAR_EL1 remains 2048-byte aligned
+    - Subsequent EL1 exceptions use the installed table
+
+  safety_requirements:
+    - The unsafe installation boundary documents the required Exception Level
+    - The unsafe installation boundary documents the FP and Advanced SIMD requirement
+    - The unsafe installation boundary documents vector lifetime requirements
+    - The unsafe installation boundary documents the single-CPU assumption
+    - The unsafe installation boundary does not claim IRQ readiness
+
+dispatch_contract:
+  owner_for_m06: boards/qemu-virt
+  symbol: haechix_exception_dispatch
+  abi: C
+  argument: mutable pointer to ExceptionContext
+
+  assembly_guarantees:
+    - The pointer is non-null
+    - The pointer is aligned for ExceptionContext
+    - The frame remains valid for the complete Rust call
+    - No other mutable reference aliases the frame
+    - The Rust call begins with a 16-byte-aligned stack
+    - Interrupts remain masked during M06 dispatch
+
+  rust_requirements:
+    - The exported symbol has one unique definition
+    - Pointer validation assumptions are documented in a safety comment
+    - The handler does not unwind
+    - The handler recognizes only the intentional M06 breakpoint as recoverable
+    - Unexpected exceptions enter a terminal diagnostic loop
+    - The kernel crate remains independent of the QEMU UART address
+
+breakpoint_probe_contract:
+  instruction: brk
+  immediate: "0x0606"
+  instruction_size_bytes: 4
+  expected_vector_id: 4
+  expected_vector_name: current-el-spx-sync
+  expected_exception_class: "0x3c"
+  expected_exception_class_name: breakpoint-from-aarch64
+  expected_instruction_length_bit: 1
+  expected_comment: "0x0606"
+
+  preconditions:
+    - VBAR_EL1 is installed
+    - The QEMU board UART bootstrap owner has been released if dispatch reports through UART
+    - The probe executes at EL1h
+    - Interrupt masking remains unchanged
+
+  recovery:
+    recognized_exception:
+      action: advance_elr_and_return
+      elr_increment_bytes: 4
+
+    unrecognized_exception:
+      action: report_and_park
+
+  postconditions:
+    - The BRK instruction is not executed repeatedly
+    - Execution resumes at the instruction immediately following BRK
+    - The board prints the exception-return success line
+    - The board can continue to kernel::start
+
+uart_ownership_contract:
+  device: PL011
+  qemu_base_address: "0x09000000"
+
+  requirements:
+    - Only boards/qemu-virt contains the QEMU PL011 base address
+    - The existing UART owner is released before exception dispatch creates another owner
+    - An exception-owned PL011 instance is released before eret
+    - The resumed board path creates a new PL011 owner only after exception return
+    - M06 does not introduce a global mutable UART
+    - The architecture crate does not depend on the PL011 driver
+
+output_contract:
+  preserved_lines:
+    - "Haechix M02: QEMU UART OK"
+    - "Haechix M03: EL1 OK"
+    - "CurrentEL=EL1"
+    - "Haechix M04: DTB OK"
+    - "compatible=linux,dummy-virt"
+    - "console=pl011@0x0000000009000000"
+    - "interrupt-controller=0x0000000008000000"
+
+  m06_success_lines:
+    - "Haechix M06: EL1 exception vector OK"
+    - "vector=current-el-spx-sync"
+    - "Haechix M06: exception return OK"
+
+  m06_variable_lines:
+    - "VBAR_EL1=0x????????????????"
+    - "ESR_EL1=0x????????????????"
+    - "ELR_EL1=0x????????????????"
+    - "FAR_EL1=0x????????????????"
+    - "SPSR_EL1=0x????????????????"
+
+  ordering:
+    - Existing M02 through M04 output completes
+    - The M06 vector installation line is printed
+    - VBAR_EL1 is printed
+    - The intentional breakpoint is executed
+    - Exception context lines are printed
+    - eret resumes the board path
+    - The M06 exception-return line is printed
+    - kernel::start is called
+
+ownership:
+  arch_aarch64:
+    responsibilities:
+      - Own the exception vector table
+      - Own ExceptionContext layout
+      - Own VBAR_EL1 installation
+      - Own assembly context save and restore
+      - Own eret
+      - Contain no board-specific addresses
+      - Contain no UART formatting policy
+
+  qemu_board:
+    responsibilities:
+      - Retain and place the vector section
+      - Install the vector after M04 platform discovery
+      - Trigger the M06 breakpoint probe
+      - Provide haechix_exception_dispatch
+      - Decode the expected breakpoint
+      - Print M06 diagnostic output
+      - Advance ELR_EL1 only for the expected breakpoint
+      - Preserve explicit PL011 ownership transitions
+
+  kernel:
+    responsibilities:
+      - Remain platform independent
+      - Continue receiving BootInfo
+      - Remain unchanged unless an unavoidable M06 ABI requirement is proven
+
+  rpi5_board:
+    responsibilities:
+      - Remain runtime-unmodified by M06
+      - Continue to cross-build successfully
+      - Defer exception-vector installation to M13 or M21
+
+scope:
+  included:
+    - FP and Advanced SIMD state preservation
+    - AArch64 EL1 vector table
+    - All sixteen architectural vector slots
+    - 2048-byte vector-table alignment
+    - ExceptionContext ABI
+    - General-purpose register capture
+    - ELR_EL1 capture and restoration
+    - SPSR_EL1 capture and restoration
+    - ESR_EL1 capture
+    - FAR_EL1 capture
+    - VBAR_EL1 installation
+    - Intentional EL1h BRK exception
+    - Current-EL SPx synchronous-vector validation
+    - Four-byte ELR advancement for the expected BRK
+    - eret return validation
+    - QEMU default EL1 runtime validation
+    - QEMU EL2-to-EL1 runtime validation
+    - Raspberry Pi 5 cross-build regression
+
+  excluded_at_completion:
+    - Generic Timer configuration
+    - Generic Timer polling
+    - GIC initialization
+    - IRQ enablement
+    - IRQ dispatch
+    - FIQ handling policy
+    - SError recovery policy
+    - Nested exception support
+    - EL0 exception handling
+    - SVC system calls
+    - User-mode fault handling
+    - Scheduler integration
+    - Preemption
+    - Per-CPU exception stacks
+    - SMP exception installation
+    - Raspberry Pi 5 runtime exception installation
+    - Panic-to-exception integration
+
+artifacts:
+  test_specification: testspecs/m06.yaml
+  architecture_module: crates/arch-aarch64/src/exception.rs
+  architecture_assembly: crates/arch-aarch64/src/exception.S
+  architecture_root: crates/arch-aarch64/src/lib.rs
+  qemu_linker_script: boards/qemu-virt/linker.ld
+  qemu_rust_entry: boards/qemu-virt/src/main.rs
+  qemu_elf: target/aarch64-unknown-none/debug/haechix-qemu-virt
+  qemu_raw_image: target/aarch64-unknown-none/debug/haechix-qemu-virt.bin
+  rpi5_elf: target/aarch64-unknown-none/debug/haechix-rpi5
+
+test_cases:
+  - id: M06-TC-001
+    title: M06 YAML syntax is valid
+    category: specification
+    method: command
+    command: >
+      python3 -c 'import pathlib, yaml;
+      yaml.safe_load(pathlib.Path("testspecs/m06.yaml").read_text(encoding="utf-8"));
+      print("Validated testspecs/m06.yaml")'
+    expected:
+      exit_code: 0
+      output_contains: "Validated testspecs/m06.yaml"
+
+  - id: M06-TC-002
+    title: Workspace formatting is valid
+    category: quality
+    method: command
+    command: cargo fmt --all --check
+    expected:
+      exit_code: 0
+
+  - id: M06-TC-003
+    title: Architecture and QEMU Clippy checks pass
+    category: quality
+    method: command
+    command: >
+      cargo clippy
+      --target aarch64-unknown-none
+      -p haechix-arch-aarch64
+      -p haechix-qemu-virt
+      -- -D warnings
+    expected:
+      exit_code: 0
+
+  - id: M06-TC-004
+    title: QEMU ELF builds without warnings
+    category: build
+    method: command
+    command: >
+      cargo build
+      --target aarch64-unknown-none
+      -p haechix-qemu-virt
+    expected:
+      exit_code: 0
+      warnings: 0
+
+  - id: M06-TC-005
+    title: QEMU raw image is regenerated
+    category: image
+    method: command
+    command: >
+      "$(rustc --print sysroot)/lib/rustlib/x86_64-unknown-linux-gnu/bin/llvm-objcopy"
+      -O binary
+      target/aarch64-unknown-none/debug/haechix-qemu-virt
+      target/aarch64-unknown-none/debug/haechix-qemu-virt.bin
+    expected:
+      exit_code: 0
+      output_file: target/aarch64-unknown-none/debug/haechix-qemu-virt.bin
+
+  - id: M06-TC-006
+    title: Raspberry Pi 5 cross-build regression passes
+    category: regression
+    method: command
+    command: >
+      cargo build
+      --target aarch64-unknown-none
+      -p haechix-rpi5
+    expected:
+      exit_code: 0
+      warnings: 0
+      runtime_validation: deferred_to_m05_hardware
+
+  - id: M06-TC-007
+    title: Vector table ELF layout is valid
+    category: binary
+    method: inspection
+    expected:
+      section: .text.exception_vector
+      section_alignment_bytes: 2048
+      section_size_bytes: 2048
+      base_symbol: aarch64_exception_vector_table
+      end_symbol: aarch64_exception_vector_table_end
+      requirements:
+        - The base symbol address modulo 0x800 equals zero
+        - The end symbol minus the base symbol equals 0x800
+        - The section has allocated and executable flags
+        - The existing ELF entry remains 0x40080000
+
+  - id: M06-TC-008
+    title: All architectural vector slots exist
+    category: binary
+    method: disassembly
+    expected:
+      slot_count: 16
+      slot_size_bytes: 128
+      required_offsets:
+        - "0x000"
+        - "0x080"
+        - "0x100"
+        - "0x180"
+        - "0x200"
+        - "0x280"
+        - "0x300"
+        - "0x380"
+        - "0x400"
+        - "0x480"
+        - "0x500"
+        - "0x580"
+        - "0x600"
+        - "0x680"
+        - "0x700"
+        - "0x780"
+
+  - id: M06-TC-009
+    title: Default EL1 profile handles the intentional breakpoint
+    category: runtime
+    method: serial_observation
+    runtime_profile: default_el1
+    expected:
+      required_lines:
+        - "Haechix M06: EL1 exception vector OK"
+        - "vector=current-el-spx-sync"
+        - "Haechix M06: exception return OK"
+      decoded_exception:
+        vector_id: 4
+        exception_class: "0x3c"
+        comment: "0x0606"
+
+  - id: M06-TC-010
+    title: EL2 normalization profile handles the intentional breakpoint
+    category: runtime
+    method: serial_observation
+    runtime_profile: el2_normalization
+    expected:
+      required_lines:
+        - "Haechix M03: EL1 OK"
+        - "CurrentEL=EL1"
+        - "Haechix M06: EL1 exception vector OK"
+        - "vector=current-el-spx-sync"
+        - "Haechix M06: exception return OK"
+
+  - id: M06-TC-011
+    title: GDB reaches the current-EL SPx synchronous slot
+    category: debug
+    method: gdb_remote
+    qemu_arguments:
+      - -S
+      - -s
+    gdb_commands:
+      - "target remote :1234"
+      - "hbreak *(aarch64_exception_vector_table + 0x200)"
+      - "break haechix_exception_dispatch"
+      - continue
+      - "x/i $pc"
+      - continue
+      - "print/x *context"
+    expected:
+      first_breakpoint:
+        symbol: aarch64_exception_vector_table
+        offset: "0x200"
+      second_breakpoint:
+        symbol: haechix_exception_dispatch
+      context:
+        vector_id: 4
+        exception_class: "0x3c"
+        breakpoint_comment: "0x0606"
+
+  - id: M06-TC-012
+    title: Exception context and return state are valid
+    category: runtime
+    method: combined_runtime_and_inspection
+    expected:
+      requirements:
+        - sp_at_entry is 16-byte aligned
+        - SPSR_EL1 mode bits identify EL1h
+        - ELR_EL1 points at the intentional BRK before dispatch
+        - The recovered ELR_EL1 equals the original ELR_EL1 plus four
+        - FAR_EL1 is captured but no value is asserted for BRK
+        - x0 through x30 are restored
+        - The interrupted stack pointer is restored
+        - eret resumes at the instruction following BRK
+
+  - id: M06-TC-013
+    title: Existing QEMU boot output remains intact
+    category: regression
+    method: serial_observation
+    expected:
+      required_lines:
+        - "Haechix M02: QEMU UART OK"
+        - "Haechix M03: EL1 OK"
+        - "CurrentEL=EL1"
+        - "Haechix M04: DTB OK"
+        - "compatible=linux,dummy-virt"
+        - "console=pl011@0x0000000009000000"
+        - "interrupt-controller=0x0000000008000000"
+
+  - id: M06-TC-014
+    title: M06 stops before timer and interrupt-controller work
+    category: scope
+    method: static_review
+    expected:
+      requirements:
+        - No Generic Timer configuration is added
+        - No GIC initialization is added
+        - No interrupt mask is cleared
+        - No EL0 or SVC path is implemented
+        - No Raspberry Pi 5 runtime vector installation is added
+        - No scheduler or preemption code is added

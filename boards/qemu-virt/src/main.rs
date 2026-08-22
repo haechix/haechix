@@ -8,11 +8,17 @@ mod platform;
 // Include the AArch64 entry point that runs before Rust code.
 core::arch::global_asm!(include_str!("boot.S"));
 
-use arch_aarch64::exception_level::{self, ExceptionLevel};
+use arch_aarch64::{
+    exception::{self, ExceptionContext, VectorId},
+    exception_level::{self, ExceptionLevel},
+};
 use boot_protocol::BootInfo;
 use drivers::uart::pl011::Pl011;
 
 const QEMU_PL011_BASE_ADDRESS: usize = 0x0900_0000;
+const M06_BREAKPOINT_EXCEPTION_CLASS: u8 = 0x3c;
+const M06_BREAKPOINT_COMMENT: u32 = 0x0606;
+const AARCH64_INSTRUCTION_SIZE: u64 = 4;
 
 fn write_hex_u64(uart: &mut Pl011, value: u64) {
     const HEX_DIGITS: &[u8; 16] = b"0123456789abcdef";
@@ -31,6 +37,85 @@ fn write_hex_u64(uart: &mut Pl011, value: u64) {
 
         shift -= 4;
     }
+}
+
+fn wait_forever() -> ! {
+    loop {
+        // SAFETY: WFE only places the current CPU into a low-power wait state.
+        // Interrupt delivery remains masked during M06.
+        unsafe {
+            core::arch::asm!("wfe", options(nomem, nostack, preserves_flags),);
+        }
+    }
+}
+
+/// Dispatches an exception context created by the AArch64 vector entry.
+///
+/// # Safety
+///
+/// `context` must be a non-null, 16-byte-aligned, uniquely mutable pointer to
+/// a complete `ExceptionContext` stored in the active exception stack frame.
+/// The QEMU bootstrap PL011 owner must have been released before entry.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn haechix_exception_dispatch(context: *mut ExceptionContext) {
+    // SAFETY: exception.S constructs one aligned ExceptionContext on the
+    // active stack and passes its unique pointer in x0.
+    let context = unsafe { &mut *context };
+
+    // SAFETY: QEMU virt maps one PL011 register block at 0x0900_0000.
+    // The board releases the previous owner before triggering the exception,
+    // and interrupts remain masked on the single M06 CPU.
+    let mut uart = unsafe { Pl011::new(QEMU_PL011_BASE_ADDRESS) };
+
+    uart.write_str("vector=");
+
+    let vector = context.vector();
+
+    match vector {
+        Some(vector) => uart.write_str(vector.name()),
+        None => uart.write_str("unknown"),
+    }
+
+    uart.write_byte(b'\n');
+
+    uart.write_str("ESR_EL1=");
+    write_hex_u64(&mut uart, context.esr_el1);
+    uart.write_byte(b'\n');
+
+    uart.write_str("ELR_EL1=");
+    write_hex_u64(&mut uart, context.elr_el1);
+    uart.write_byte(b'\n');
+
+    uart.write_str("FAR_EL1=");
+    write_hex_u64(&mut uart, context.far_el1);
+    uart.write_byte(b'\n');
+
+    uart.write_str("SPSR_EL1=");
+    write_hex_u64(&mut uart, context.spsr_el1);
+    uart.write_byte(b'\n');
+
+    let is_expected_breakpoint = vector == Some(VectorId::CurrentElSpxSynchronous)
+        && context.exception_class() == M06_BREAKPOINT_EXCEPTION_CLASS
+        && context.instruction_length_is_32_bit()
+        && context.instruction_specific_syndrome() & 0xffff == M06_BREAKPOINT_COMMENT;
+
+    if !is_expected_breakpoint {
+        uart.write_str("Haechix M06: unexpected exception\n");
+        uart.release();
+        wait_forever();
+    }
+
+    context.elr_el1 = match context.elr_el1.checked_add(AARCH64_INSTRUCTION_SIZE) {
+        Some(next_instruction) => next_instruction,
+
+        None => {
+            uart.write_str("Haechix M06: ELR_EL1 overflow\n");
+            uart.release();
+            wait_forever();
+        }
+    };
+
+    uart.release();
 }
 
 // SAFETY: This is the unique exported definition of the boot ABI symbol.
@@ -178,6 +263,49 @@ pub extern "C" fn start(dtb_address: usize) {
     uart.write_str("interrupt-controller=");
     write_hex_u64(&mut uart, platform_info.interrupt_controller.address);
     uart.write_byte(b'\n');
+
+    // SAFETY: M03 guarantees EL1h execution with a valid boot stack, and boot.S
+    // enables FP and Advanced SIMD access before Rust entry. The linked table is
+    // permanent and aligned, while boot remains single-core with interrupts
+    // masked throughout M06.
+    unsafe {
+        exception::install();
+    }
+
+    // SAFETY: Execution remains at EL1 after installing the vector table.
+    let vbar_el1 = unsafe { exception::read_vbar_el1() };
+
+    if vbar_el1 != exception::vector_table_address() as u64 {
+        uart.write_str("Haechix M06: VBAR_EL1 mismatch\n");
+        return;
+    }
+
+    uart.write_str("Haechix M06: EL1 exception vector OK\n");
+
+    uart.write_str("VBAR_EL1=");
+    write_hex_u64(&mut uart, vbar_el1);
+    uart.write_byte(b'\n');
+
+    // Transfer exclusive PL011 ownership to the exception dispatcher.
+    uart.release();
+
+    // SAFETY: VBAR_EL1 points to the linked M06 vector table, the EL1 boot
+    // stack has enough space for the 832-byte exception frame, the dispatcher
+    // is linked, and the previous PL011 owner was released above.
+    unsafe {
+        core::arch::asm!(
+            "brk #{comment}",
+            comment = const M06_BREAKPOINT_COMMENT,
+            options(preserves_flags),
+        );
+    }
+
+    // SAFETY: The exception dispatcher released its temporary PL011 owner
+    // before eret, and M06 still runs on one QEMU CPU.
+    let mut uart = unsafe { Pl011::new(QEMU_PL011_BASE_ADDRESS) };
+
+    uart.write_str("Haechix M06: exception return OK\n");
+    uart.release();
 
     kernel::start(&boot_info);
 }

@@ -5,4 +5,8 @@
 // Include the stackless Exception Level normalization routine.
 core::arch::global_asm!(include_str!("exception_level.S"));
 
+// Include the reusable EL1 exception vector and context entry routine.
+core::arch::global_asm!(include_str!("exception.S"));
+
+pub mod exception;
 pub mod exception_level;

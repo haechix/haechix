@@ -14,6 +14,11 @@ SECTIONS
         KEEP(*(.text.boot))
     }
 
+    .text.exception_vector : ALIGN(2K)
+    {
+        KEEP(*(.text.exception_vector))
+    }
+
     .text : ALIGN(4K)
     {
         *(.text .text.*)
