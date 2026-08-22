@@ -7,6 +7,14 @@ pub struct Reg {
     pub size: u64,
 }
 
+/// The first address-translation tuple decoded from an FDT `ranges` property.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct Range {
+    pub child_address: u64,
+    pub parent_address: u64,
+    pub size: u64,
+}
+
 pub fn first_string(value: &[u8]) -> Result<&str, Error> {
     let length = value
         .iter()
@@ -85,6 +93,86 @@ pub fn first_reg(value: &[u8], address_cells: u32, size_cells: u32) -> Result<Re
     Ok(Reg {
         address: decode_cells(address_slice)?,
         size: decode_cells(size_slice)?,
+    })
+}
+
+pub fn first_range(
+    value: &[u8],
+    child_address_cells: u32,
+    parent_address_cells: u32,
+    size_cells: u32,
+) -> Result<Range, Error> {
+    if !matches!(child_address_cells, 1 | 2)
+        || !matches!(parent_address_cells, 1 | 2)
+        || !matches!(size_cells, 1 | 2)
+    {
+        return Err(Error::UnsupportedRangeCellCount {
+            child_address_cells,
+            parent_address_cells,
+            size_cells,
+        });
+    }
+
+    let child_cell_count =
+        usize::try_from(child_address_cells).map_err(|_| Error::IntegerOverflow)?;
+
+    let parent_cell_count =
+        usize::try_from(parent_address_cells).map_err(|_| Error::IntegerOverflow)?;
+
+    let size_cell_count = usize::try_from(size_cells).map_err(|_| Error::IntegerOverflow)?;
+
+    let child_bytes = child_cell_count
+        .checked_mul(4)
+        .ok_or(Error::IntegerOverflow)?;
+
+    let parent_bytes = parent_cell_count
+        .checked_mul(4)
+        .ok_or(Error::IntegerOverflow)?;
+
+    let size_bytes = size_cell_count
+        .checked_mul(4)
+        .ok_or(Error::IntegerOverflow)?;
+
+    let parent_start = child_bytes;
+
+    let size_start = parent_start
+        .checked_add(parent_bytes)
+        .ok_or(Error::IntegerOverflow)?;
+
+    let required = size_start
+        .checked_add(size_bytes)
+        .ok_or(Error::IntegerOverflow)?;
+
+    if value.len() < required {
+        return Err(Error::TruncatedRange {
+            required,
+            actual: value.len(),
+        });
+    }
+
+    let child = value.get(..parent_start).ok_or(Error::TruncatedRange {
+        required,
+        actual: value.len(),
+    })?;
+
+    let parent = value
+        .get(parent_start..size_start)
+        .ok_or(Error::TruncatedRange {
+            required,
+            actual: value.len(),
+        })?;
+
+    let size = value
+        .get(size_start..required)
+        .ok_or(Error::TruncatedRange {
+            required,
+            actual: value.len(),
+        })?;
+
+    Ok(Range {
+        child_address: decode_cells(child)?,
+        parent_address: decode_cells(parent)?,
+        size: decode_cells(size)?,
     })
 }
 
@@ -225,6 +313,50 @@ mod tests {
         assert_eq!(
             stdout_path(b"/soc//pl011@9000000\0"),
             Err(Error::InvalidNodePath)
+        );
+    }
+
+    #[test]
+    fn decodes_simple_bus_range() {
+        let value = [
+            // Child address: 0x00000000
+            0x00, 0x00, 0x00, 0x00, // Parent address: 0x00000010_00000000
+            0x00, 0x00, 0x00, 0x10, 0x00, 0x00, 0x00, 0x00, // Size: 0x80000000
+            0x80, 0x00, 0x00, 0x00,
+        ];
+
+        assert_eq!(
+            first_range(&value, 1, 2, 1),
+            Ok(Range {
+                child_address: 0,
+                parent_address: 0x0000_0010_0000_0000,
+                size: 0x8000_0000,
+            })
+        );
+    }
+
+    #[test]
+    fn rejects_unsupported_range_cell_count() {
+        assert_eq!(
+            first_range(&[], 3, 2, 1),
+            Err(Error::UnsupportedRangeCellCount {
+                child_address_cells: 3,
+                parent_address_cells: 2,
+                size_cells: 1,
+            })
+        );
+    }
+
+    #[test]
+    fn rejects_truncated_range() {
+        let value = [0_u8; 12];
+
+        assert_eq!(
+            first_range(&value, 1, 2, 1),
+            Err(Error::TruncatedRange {
+                required: 16,
+                actual: 12,
+            })
         );
     }
 }

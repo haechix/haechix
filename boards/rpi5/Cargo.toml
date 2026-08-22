@@ -4,7 +4,8 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-kernel = { workspace = true }
 arch-aarch64 = { workspace = true }
 drivers = { workspace = true }
+fdt = { workspace = true }
 boot-protocol = { workspace = true }
+kernel = { workspace = true }

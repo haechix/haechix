@@ -6,9 +6,9 @@ members = [
     "crates/drivers",
     "crates/boot-protocol",
     "crates/user-abi",
+    "crates/fdt",
     "boards/qemu-virt",
     "boards/rpi5",
-    "crates/fdt",
 ]
 
 [profile.dev]

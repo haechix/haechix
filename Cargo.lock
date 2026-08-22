@@ -44,6 +44,7 @@ dependencies = [
  "haechix-arch-aarch64",
  "haechix-boot-protocol",
  "haechix-drivers",
+ "haechix-fdt",
  "haechix-kernel",
 ]
 

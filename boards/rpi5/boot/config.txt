@@ -1,0 +1,7 @@
+[all]
+arm_64bit=1
+kernel=kernel_2712.img
+device_tree=bcm2712-rpi-5-b.dtb
+os_check=0
+enable_uart=1
+uart_2ndstage=1

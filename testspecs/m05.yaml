@@ -1,0 +1,540 @@
+schema_version: 1
+document_type: milestone_test_spec
+
+project: haechix
+
+phase:
+  id: B
+  title: Raspberry Pi 5 Early Portability
+
+milestone:
+  id: M05
+  title: Raspberry Pi 5 Entry and Early UART
+  objective: >
+    Boot a Raspberry Pi 5 raw AArch64 image through the board firmware,
+    normalize execution to EL1h, reuse the common PL011 and FDT layers,
+    translate Pi 5 bus addresses into CPU physical addresses, construct
+    BootInfo, and enter the platform-independent kernel.
+
+environment:
+  working_directory: repository_root
+  host: WSL2 Ubuntu
+  rust_version: "1.97.1"
+  target: aarch64-unknown-none
+
+  target_board:
+    model: Raspberry Pi 5
+    installed_memory: 16GB
+    soc: BCM2712
+    cpu: Cortex-A76
+    boot_storage: microSD
+    nvme_during_bringup: disconnected
+
+  serial:
+    connector: Raspberry Pi 5 UART debug connector
+    adapter: Raspberry Pi Debug Probe UART
+    baud_rate: 115200
+    data_bits: 8
+    parity: none
+    stop_bits: 1
+    flow_control: none
+
+image_contract:
+  debug_image:
+    format: ELF
+    path: target/aarch64-unknown-none/debug/haechix-rpi5
+    purpose:
+      - Symbol inspection
+      - Section inspection
+      - Disassembly
+      - Future source-level debugging
+
+  runtime_image:
+    format: raw_binary
+    filename: kernel_2712.img
+    path: target/aarch64-unknown-none/debug/kernel_2712.img
+    source: target/aarch64-unknown-none/debug/haechix-rpi5
+
+  requirements:
+    - The runtime image is generated from the linked ELF with llvm-objcopy
+    - The runtime image begins with the first instruction of _start
+    - ELF debug sections are not copied into the runtime image
+    - NOLOAD BSS and boot stack storage are not copied into the runtime image
+    - The ELF remains available for symbol and disassembly inspection
+
+boot_configuration:
+  repository_template: boards/rpi5/boot/config.txt
+
+  values:
+    arm_64bit: 1
+    kernel: kernel_2712.img
+    device_tree: bcm2712-rpi-5-b.dtb
+    os_check: 0
+    enable_uart: 1
+    uart_2ndstage: 1
+
+  requirements:
+    - The Raspberry Pi 5 firmware-provided DTB remains on the boot partition
+    - The Haechix image replaces only the selected kernel image
+    - uart_2ndstage remains enabled during early bring-up
+    - The generated kernel image hash is checked after copying to microSD
+
+boot_entry_contract:
+  entry_symbol: _start
+  entry_address: "0x00200000"
+  entry_registers:
+    x0: physical DTB address
+
+  supported_initial_exception_levels:
+    - EL1
+    - EL2
+
+  unsupported_initial_exception_levels:
+    - EL3
+    - EL0
+
+  requirements:
+    - Interrupts are masked before exception vectors exist
+    - No stack access occurs before Exception Level normalization
+    - x0 remains unchanged until the Rust board start function
+    - Only affinity-level-zero core zero continues boot
+    - Other participating cores remain in a wfe loop
+    - EL2 transitions to EL1h
+    - EL1 continues at EL1h
+    - SP_EL1 uses the board-owned boot stack
+    - FP and Advanced SIMD access is enabled before Rust executes
+    - The BSS range is cleared before Rust executes
+    - Returning from Rust enters the board wfe loop
+
+linker_contract:
+  load_address: "0x00200000"
+  boot_stack_size_bytes: 65536
+  boot_stack_alignment_bytes: 16
+
+  ordered_sections:
+    - .text.boot
+    - .text
+    - .rodata
+    - .data
+    - .bss
+    - .boot_stack
+
+  required_symbols:
+    - __kernel_start
+    - _start
+    - __bss_start
+    - __bss_end
+    - __boot_stack_bottom
+    - __boot_stack_top
+    - __kernel_end
+
+  requirements:
+    - _start equals the ELF entry address
+    - __bss_start is not greater than __bss_end
+    - __bss_end is not greater than __boot_stack_bottom
+    - __boot_stack_top minus __boot_stack_bottom equals 0x10000
+    - __kernel_end equals __boot_stack_top
+    - The boot stack section is NOLOAD
+
+early_marker_contract:
+  output: "12345\n"
+
+  markers:
+    "1": primary core reached _start
+    "2": EL1h and boot stack are active
+    "3": FP and Advanced SIMD access is enabled
+    "4": BSS initialization completed
+    "5": Rust board start is about to be called
+
+  unsupported_el3_output: "E3\n"
+
+early_uart_contract:
+  device: PL011
+  dtb_node: serial@7d001000
+  bus_address: "0x000000007d001000"
+  cpu_physical_address: "0x000000107d001000"
+  flag_register_offset: "0x18"
+  transmit_fifo_full_bit: 5
+
+  requirements:
+    - The early UART physical address exists only in boards/rpi5
+    - Early assembly output does not require the Rust stack
+    - Early assembly output preserves x0
+    - The firmware initializes UART10 before entering Haechix
+    - The common PL011 Rust driver is reused after Rust entry
+    - The bootstrap UART owner is released before another Pl011 is created
+    - The DTB-discovered UART address equals the bootstrap UART address
+
+fdt_extension_contract:
+  owner: crates/fdt
+
+  new_api:
+    structure: Range
+    function: first_range
+
+  range_fields:
+    - child_address
+    - parent_address
+    - size
+
+  supported_cell_counts:
+    child_address_cells:
+      - 1
+      - 2
+    parent_address_cells:
+      - 1
+      - 2
+    size_cells:
+      - 1
+      - 2
+
+  requirements:
+    - Range values are decoded as big-endian cells
+    - All size calculations use checked arithmetic
+    - Truncated range tuples return an explicit error
+    - Unsupported cell counts return an explicit error
+    - The FDT crate contains no Raspberry Pi address constants
+    - The FDT crate remains no_std
+    - The FDT crate performs no dynamic allocation
+
+rpi5_platform_contract:
+  root:
+    compatible: raspberrypi,5-model-b
+    required_properties:
+      - compatible
+      - "#address-cells"
+      - "#size-cells"
+
+  memory:
+    node_name_prefix: memory@
+    device_type: memory
+    selected_range: first reg tuple
+    limitation: >
+      BootInfo represents only the first contiguous RAM range during M05.
+      Multiple RAM ranges and reserved-memory processing are deferred.
+
+  chosen:
+    property: stdout-path
+    expected_selector: serial10
+    optional_suffix: "115200n8"
+
+  aliases:
+    required_alias: serial10
+    expected_target: /soc@107c000000/serial@7d001000
+
+  soc:
+    expected_compatible: simple-bus
+    required_properties:
+      - "#address-cells"
+      - "#size-cells"
+      - ranges
+
+  address_translation:
+    child_base: "0x0000000000000000"
+    parent_base: "0x0000001000000000"
+    size: "0x0000000080000000"
+
+  console:
+    expected_compatible: arm,pl011
+    bus_address: "0x000000007d001000"
+    translated_address: "0x000000107d001000"
+
+  interrupt_controller:
+    expected_compatible: arm,gic-400
+    bus_address: "0x000000007fff9000"
+    translated_address: "0x000000107fff9000"
+
+  limitations:
+    - Only an absolute stdout path or one alias lookup is supported
+    - The console must be a direct child of the selected root simple-bus
+    - Only the first ranges tuple is used
+    - Only the first reg tuple is used
+    - Arbitrarily nested bus translation is excluded
+
+boot_info_contract:
+  owner: crates/boot-protocol
+
+  fields:
+    memory_start:
+      source: first memory reg address
+
+    memory_size:
+      source: first memory reg size
+
+    uart_base:
+      source: translated PL011 physical address
+
+    interrupt_controller_base:
+      source: translated GIC-400 physical address
+
+  requirements:
+    - Every u64 to usize conversion is checked
+    - The memory range is non-empty
+    - Memory end calculation does not overflow
+    - BootInfo contains no borrowed FDT data
+    - kernel::start receives BootInfo through an explicit reference
+
+output_contract:
+  early_output:
+    - "12345"
+
+  success_lines:
+    - "Haechix M05: Raspberry Pi 5 early UART OK"
+    - "Haechix M05: EL1 OK"
+    - "CurrentEL=EL1"
+    - "Haechix M05: DTB OK"
+    - "compatible=raspberrypi,5-model-b"
+    - "console=pl011@0x000000107d001000"
+    - "interrupt-controller=gic400@0x000000107fff9000"
+
+  variable_lines:
+    - "MPIDR_EL1=0x????????????????"
+    - "SCTLR_EL1=0x????????????????"
+    - "memory-first-range=0x????????????????..0x????????????????"
+
+  error_prefix: "Haechix M05: DTB error: "
+
+ownership:
+  arch_aarch64:
+    responsibilities:
+      - Reuse EL1 and EL2 normalization
+      - Contain no Raspberry Pi MMIO addresses
+
+  fdt:
+    responsibilities:
+      - Decode reusable FDT structures
+      - Decode reg and ranges values
+      - Contain no board selection policy
+
+  rpi5_board:
+    responsibilities:
+      - Own the linker layout
+      - Own _start
+      - Own the early UART physical address
+      - Receive the DTB address through x0
+      - Resolve Pi 5 stdout-path and aliases
+      - Translate Pi 5 simple-bus addresses
+      - Construct BootInfo
+      - Report early boot failures
+
+  drivers:
+    responsibilities:
+      - Reuse the common PL011 polling implementation
+      - Receive its MMIO base address from the board
+
+  kernel:
+    responsibilities:
+      - Receive normalized BootInfo
+      - Remain independent of Pi 5 DTB layout
+      - Remain independent of Raspberry Pi MMIO constants
+
+scope:
+  included:
+    - Raspberry Pi 5 linker layout
+    - Raspberry Pi 5 AArch64 _start
+    - Primary-core gate
+    - Early UART stage markers
+    - Reuse of Exception Level normalization
+    - Reuse of PL011 polling output
+    - Reuse of the allocation-free FDT parser
+    - Alias-based stdout-path resolution
+    - First simple-bus ranges tuple decoding
+    - PL011 physical address translation
+    - GIC-400 physical address translation
+    - First memory range extraction
+    - BootInfo construction
+    - Raw kernel_2712.img generation
+    - QEMU M02 through M04 regression validation
+    - Raspberry Pi 5 cold-boot validation
+
+  excluded_at_completion:
+    - Raspberry Pi 4 support
+    - Multiple memory range management
+    - reserved-memory management
+    - General nested bus translation
+    - Phandle resolution
+    - Exception vector installation
+    - IRQ handling
+    - Generic timer
+    - GIC initialization
+    - MMU
+    - Cache enablement
+    - SMP startup
+    - Scheduler
+    - Userspace
+    - System calls
+    - NVMe boot
+    - RP1 device drivers
+
+artifacts:
+  rpi5_manifest: boards/rpi5/Cargo.toml
+  rpi5_build_script: boards/rpi5/build.rs
+  rpi5_linker_script: boards/rpi5/linker.ld
+  rpi5_boot_entry: boards/rpi5/src/boot.S
+  rpi5_dtb_boundary: boards/rpi5/src/dtb.rs
+  rpi5_platform_discovery: boards/rpi5/src/platform.rs
+  rpi5_rust_entry: boards/rpi5/src/main.rs
+  boot_configuration: boards/rpi5/boot/config.txt
+  fdt_source: crates/fdt/src
+  rpi5_elf: target/aarch64-unknown-none/debug/haechix-rpi5
+  rpi5_raw_image: target/aarch64-unknown-none/debug/kernel_2712.img
+
+test_cases:
+  - id: M05-TC-001
+    title: Workspace formatting is valid
+    category: quality
+    method: command
+    command: cargo fmt --all --check
+    expected:
+      exit_code: 0
+
+  - id: M05-TC-002
+    title: FDT unit tests pass
+    category: parser
+    method: command
+    command: cargo test -p haechix-fdt
+    expected:
+      exit_code: 0
+      failed_tests: 0
+
+  - id: M05-TC-003
+    title: FDT Clippy checks pass
+    category: quality
+    method: command
+    command: cargo clippy -p haechix-fdt --all-targets -- -D warnings
+    expected:
+      exit_code: 0
+
+  - id: M05-TC-004
+    title: Raspberry Pi 5 Clippy checks pass
+    category: quality
+    method: command
+    command: >
+      cargo clippy
+      --target aarch64-unknown-none
+      -p haechix-rpi5
+      -- -D warnings
+    expected:
+      exit_code: 0
+
+  - id: M05-TC-005
+    title: Raspberry Pi 5 ELF builds
+    category: build
+    method: command
+    command: >
+      cargo build
+      --target aarch64-unknown-none
+      -p haechix-rpi5
+    expected:
+      exit_code: 0
+      warnings: 0
+
+  - id: M05-TC-006
+    title: ELF entry is the Raspberry Pi 5 load address
+    category: binary
+    method: inspection
+    expected:
+      format: elf64-littleaarch64
+      machine: EM_AARCH64
+      entry: "0x200000"
+
+  - id: M05-TC-007
+    title: Boot symbols and stack layout are valid
+    category: binary
+    method: inspection
+    expected:
+      entry_symbol: _start
+      stack_size_bytes: 65536
+      requirements:
+        - aarch64_normalize_to_el1 exists
+        - start exists
+        - BSS precedes the boot stack
+        - kernel end equals boot stack top
+
+  - id: M05-TC-008
+    title: Raw image begins with _start
+    category: image
+    method: inspection
+    expected:
+      offset: 0
+      first_instruction_bytes: df4f03d5
+      first_instruction: "msr DAIFSet, #0xf"
+
+  - id: M05-TC-009
+    title: QEMU default EL1 regression passes
+    category: regression
+    method: runtime
+    expected:
+      required_lines:
+        - "Haechix M02: QEMU UART OK"
+        - "Haechix M03: EL1 OK"
+        - "CurrentEL=EL1"
+        - "Haechix M04: DTB OK"
+
+  - id: M05-TC-010
+    title: QEMU EL2 normalization regression passes
+    category: regression
+    method: runtime
+    runtime_profile: virt,virtualization=on
+    expected:
+      required_lines:
+        - "Haechix M03: EL1 OK"
+        - "CurrentEL=EL1"
+        - "Haechix M04: DTB OK"
+
+  - id: M05-TC-011
+    title: Raspberry Pi boot files are complete
+    category: packaging
+    method: static_review
+    expected:
+      required_files:
+        - config.txt
+        - kernel_2712.img
+        - bcm2712-rpi-5-b.dtb
+      requirements:
+        - os_check is disabled for bare-metal boot
+        - the kernel filename matches config.txt
+        - the copied kernel image hash matches the build artifact
+
+  - id: M05-TC-012
+    title: Early assembly markers reach Rust entry
+    category: hardware
+    method: serial_observation
+    expected:
+      exact_line: "12345"
+
+  - id: M05-TC-013
+    title: Reused PL011 driver emits the M05 banner
+    category: hardware
+    method: serial_observation
+    expected:
+      required_line: "Haechix M05: Raspberry Pi 5 early UART OK"
+
+  - id: M05-TC-014
+    title: Raspberry Pi 5 executes Rust at EL1
+    category: hardware
+    method: serial_observation
+    expected:
+      required_lines:
+        - "Haechix M05: EL1 OK"
+        - "CurrentEL=EL1"
+
+  - id: M05-TC-015
+    title: Firmware DTB produces the expected platform information
+    category: hardware
+    method: serial_observation
+    expected:
+      required_lines:
+        - "Haechix M05: DTB OK"
+        - "compatible=raspberrypi,5-model-b"
+        - "console=pl011@0x000000107d001000"
+        - "interrupt-controller=gic400@0x000000107fff9000"
+
+  - id: M05-TC-016
+    title: Cold boot is repeatable
+    category: hardware
+    method: repeated_cold_boot
+    repetitions: 5
+    expected:
+      successful_boots: 5
+      required_final_line_prefix: "interrupt-controller=gic400@"

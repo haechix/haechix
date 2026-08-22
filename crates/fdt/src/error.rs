@@ -52,4 +52,13 @@ pub enum Error {
         required: usize,
         actual: usize,
     },
+    UnsupportedRangeCellCount {
+        child_address_cells: u32,
+        parent_address_cells: u32,
+        size_cells: u32,
+    },
+    TruncatedRange {
+        required: usize,
+        actual: usize,
+    },
 }

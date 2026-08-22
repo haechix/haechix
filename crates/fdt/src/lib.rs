@@ -8,7 +8,7 @@ mod property;
 mod structure;
 
 pub use error::Error;
-pub use property::{Reg, first_reg, first_string, stdout_path, u32_value};
+pub use property::{Range, Reg, first_range, first_reg, first_string, stdout_path, u32_value};
 pub use structure::{Token, Tokens};
 
 /// Size in bytes of an FDT version 17 header.
